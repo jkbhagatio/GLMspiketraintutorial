@@ -1,413 +1,928 @@
 % tutorial1_PoissonGLM.m
 %
-% This is a tutorial illustrating the fitting of a linear-Gaussian GLM
-% (also known as linear least-squares regression model) and a Poisson GLM
-% (aka  "linear-nonlinear-Poisson" model) to retinal ganglion cell spike
-% trains stimulated with binary temporal white noise. 
+% This tutorial covers using generalized linear models (GLMs) to model
+% neural spiking data. This tutorial assumes basic-to-intermediate
+% familiariy with behavioral neuroscience experiments, neural spike data,
+% statistics / statistical distributions, linear algebra, and
+% MATLAB programming.
+%
+% This tutorial illustrates the fitting of a Gaussian GLM (aka 
+% linear-least-squares regression) and a Poisson GLM (aka 
+% linear-nonlinear-Poisson regression) to retinal ganglion cell spike
+% trains that are stimulated with visual presentation of binary white noise
+% (the normalized intensity of the white noise - the relative ratio of 
+% black to white pixels on a gray screen - changes between two distinct 
+% values over time).
+%
+% The purpose of using GLMs in this context is to predict the response
+% variable - the spiking activity (either rate or binned counts) - from 
+% predictor variables - the past intensity values of the stimulus.
 %
 % DATASET: this tutorial is designed to run with retinal ganglion cell
 % spike train data from Uzzell & Chichilnisky 2004. The dataset can be 
-% downloaded here:
-%    http://pillowlab.princeton.edu/data/data_RGCs.zip
-% The dataset is provided for tutorial purposes only, and should not be
-% distributed or used for publication without express permission from EJ
-% Chichilnisky (ej@stanford.edu). 
+% made available upon request to the authors.
 %
-% Last updated: Mar 10, 2020 (JW Pillow)
+% @todo: 1) rephrase some things in classic GLM terminology (mention the
+% response variable distribution, the link function, the mean function). 2)
+% mention likelihood function (and show computation) in section 6.
 
 
 %% How to use this tutorial:
-% =========================
 %
 % This is an interactive tutorial designed to walk you through the steps of
 % fitting two classic models (linear-Gaussian GLM and Poisson GLM) to spike
-% train data.  It is organized into 'sections' that can be executed one after
-% the other using keyboard shortcuts.  The relevant shortcuts are:
-% 1. ctrl-enter     - execute the current section   
-% 2. ctrl-downarrow - move to the next section      
-% 3. ctrl-uparrow   - move to the prev section (if you want to go back up).
-% 4. ctrl-shift-enter - execute current section and move to the next
+% train data. It is organized into 'sections'.
 %
-% I strongly recommend learning to use these shortcuts and avoid using the
-% mouse to select the "run this section" commands from the "editor" tab
-% above. The mouse is a huge waste of time!
-
-% In the following, I recommend positioning the figure window once it
-% appears in a place where you can easily see it (e.g., 'docked' beside or
+% In the following, I recommend positioning the figure window (once it
+% appears) in a place where you can easily see it (e.g., 'docked' beside or
 % above the editor / command windows, or else in its own place on the
 % screen), with no other matlab windows you need on top of it or underneath
-% it. Each section of the tutorial will overwrite the figure window, so
-% once you get it positioned correctly there will be no need to  lift your
-% hands from the keyboard. Just click cmd-enter to execute each section,
-% read the relevant code and make changes as desired, and then cmd-down to
-% go to the next section. And repeat. The figure window will always display
-% the plots made in the current section, so there's no need to go clicking
-% through multiple windows to find the one you're looking for!
+% it. Each section of the tutorial will overwrite the figure window. The 
+% figure window will always display the plots made in the current section,
+% so there's no need to go clicking through multiple windows to find the 
+% one you're looking for!
+%
+% Be sure to place the data file on your MATLAB path before running the
+% tutorial.
 
+%% 1. Load and plot the raw data
 
-%% ====  1. Load the raw data ============
+% Load data.
+data_dir = 'data_RGCs/';       % data directory
+load([data_dir, 'Stim']);      % stimulus values (binary white noise)
+load([data_dir,'stimtimes']);  % stim frame times (in s)
+load([data_dir, 'SpTimes']);   % spike times for 4 cells (in s)
 
-% ------------------------------------------------------------------------
-% Be sure to unzip the data file data_RGCs.zip
-% (http://pillowlab.princeton.edu/data/data_RGCs.zip) and place it in 
-% this directory before running the tutorial.  
-% Or substitute your own dataset here instead!
-% ------------------------------------------------------------------------
-% (Data from Uzzell & Chichilnisky 2004):
-datdir = 'data_RGCs/';  % directory where stimulus lives
-load([datdir, 'Stim']);    % stimulus (temporal binary white noise)
-load([datdir,'stimtimes']); % stim frame times in seconds (if desired)
-load([datdir, 'SpTimes']); % load spike times (in units of stim frames)
+% Rename variables.
+stim = Stim;
+stim_ts = stimtimes;
+spk_ts = SpTimes;
+clear Stim stimtimes SpTimes
 
-% Pick a cell to work with
-cellnum = 3; % (1-2 are OFF cells; 3-4 are ON cells).
-tsp = SpTimes{cellnum};
-% -------------------------------------------------------------------------
+% Pick a cell to work with.
+cell_num = 3; % (1-2 are OFF cells; 3-4 are ON cells).
+spk_ts_cell = spk_ts{cell_num};
 
-% Compute some basic statistics on the data
-dtStim = (stimtimes(2)-stimtimes(1)); % time bin size for stimulus (s)
-RefreshRate = 1/dtStim; % Refresh rate of the monitor
-nT = size(Stim,1); % number of time bins in stimulus
-nsp = length(tsp); % number of spikes
+% Compute some basic statistics on the data.
+dt = (stim_ts(2) - stim_ts(1));  % time bin size for stim (s)
+n_obs = size(stim, 1);           % number of stim samples (observations)
+n_spks = length(spk_ts_cell);    % number of spikes
 
-% Print out some basic info
+% Print out some basic info.
 fprintf('--------------------------\n');
-fprintf('Loaded RGC data: cell %d\n', cellnum);
-fprintf('Number of stim frames: %d  (%.1f minutes)\n', nT, nT*dtStim/60);
-fprintf('Time bin size: %.1f ms\n', dtStim*1000);
-fprintf('Number of spikes: %d (mean rate=%.1f Hz)\n\n', nsp, nsp/nT*RefreshRate);
+fprintf('Loaded RGC data: cell %d\n', cell_num);
+fprintf('Number of stim frames: %d (%.1f minutes)\n', n_obs, ...
+        n_obs * (dt / 60));
+fprintf('Time bin size: %.5f s\n', dt);
+fprintf('Number of spikes: %d (mean rate = %.1f Hz)\n\n', n_spks, ...
+        n_spks / n_obs * (1 / dt));
 
-% Let's visualize some of the raw data
-subplot(211);
-iiplot = 1:120; % bins of stimulus to plot
-ttplot = iiplot*dtStim; % time bins of stimulus
-plot(ttplot,Stim(iiplot), 'linewidth', 2);  axis tight;
+% Plot first second of stimulus.
+figure
+subplot(2, 1, 1);
+stim_bins_1s = 1 : round(1 / dt);       % bins of stimulus to plot
+t_in_stim_bins_1s = stim_bins_1s * dt;  % time bins of stimulus
+plot(t_in_stim_bins_1s, stim(stim_bins_1s), 'linewidth', 2); 
+axis tight;
 title('raw stimulus (full field flicker)');
 ylabel('stim intensity');
-subplot(212);
-tspplot = tsp((tsp>=ttplot(1))&(tsp<ttplot(end)));
-plot(tspplot, 1, 'ko', 'markerfacecolor', 'k');
-set(gca,'xlim', ttplot([1 end]));
-title('spike times'); xlabel('time (s)');
+% Plot spike times.
+subplot(2, 1, 2);
+% Get the spike times that happen within `bins`.
+spk_ts_in_1s = ...
+    spk_ts_cell((spk_ts_cell >= t_in_stim_bins_1s(1)) ...
+                     & (spk_ts_cell < t_in_stim_bins_1s(end)));
+plot(spk_ts_in_1s, 1, 'ko', 'markerfacecolor', 'k');
+axis tight
+set(gca, 'xlim', t_in_stim_bins_1s([1 end]));
+title('spike times');
+xlabel('time (s)');
 
-%% ==== 2. Bin the spike train ===== 
-%
-% For now we will assume we want to use the same time bin size as the time
-% bins used for the stimulus. Later, though, we'll wish to vary this.
+%% 2. Create the response variable: bin the spike train
 
-tbins = (.5:nT)*dtStim; % time bin centers for spike train binnning
-sps = hist(tsp,tbins)';  % binned spike train
+% For now, we will assume we want to use the same bins on the spike train
+% as the bins used for the stimulus. Later, though, we'll wish to vary 
+% this. This binned spike activity vector (where we have a spike count for
+% each observation) will be what we are trying to predict from our GLMs.
 
-% Replot the responses we'll putting into our regression as counts
-subplot(212);
-stem(ttplot,sps(iiplot), 'k', 'linewidth', 2);
+% Create time bins for spike train binning.
+spk_ts_bins = [0, ((1 : n_obs) * dt)];
+% Bin the spike train.
+spk_ts_hist = histcounts(spk_ts_cell, spk_ts_bins);
+% Ensure column vector and rename as `y`.
+y = spk_ts_hist(:);
+
+% Replot spiking data as counts.
+subplot(2, 1, 2);
+stem(t_in_stim_bins_1s, y(stim_bins_1s), 'k', 'linewidth', 2);
 title('binned spike counts');
-ylabel('spike count'); xlabel('time (s)');
-set(gca,'xlim', ttplot([1 end]), 'ylim', [0 3.5]);
+ylabel('spike count');
+xlabel('time (s)');
+axis tight
 
+%% 3. Create the predictor variables: build the design matrix
 
-%% ==== 3. Build the design matrix: slow version ======
-% This is a necessary step before we can fit the model: assemble a matrix
-% that contains the relevant regressors for each time bin of the response,
-% known as a design matrix.  Each row of this matrix contains the relevant
-% stimulus chunk for predicting the spike count at a given time bin
+% This is a necessary step before we can fit the model: we need to 
+% assemble a matrix that contains the relevant predictor variables 
+% (aka regressors aka covariates aka parameters) for each time bin of the 
+% response. This is known as a design matrix. Each row of this matrix
+% contains the relevant past stimulus chunk for predicting the spike count 
+% at a given time bin.
 
-% Set the number of time bins of stimulus to use for predicting spikes
-ntfilt = 25;  % Try varying this, to see how performance changes!
+% Set the number of past bins of the stimulus to use to predict spikes.
+% (Try varying this to see how performance changes!)
+n_p_x = 25;  % number of parameters in `x` design matrix (bins in past)
+% Pad early bins of stimulus with zero.
+padded_stim = [zeros(n_p_x - 1, 1); stim];
 
-% Build the design matrix: Slow version
-paddedStim = [zeros(ntfilt-1,1); Stim]; % pad early bins of stimulus with zero
-Xdsgn = zeros(nT,ntfilt);
-for j = 1:nT
-    Xdsgn(j,:) = paddedStim(j:j+ntfilt-1)'; % grab last 'nkt' bins of stmiulus and insert into this row
+% Preallocate and build design matrix row by row.
+x = zeros(n_obs, n_p_x);
+for i_obs = 1 : n_obs
+    x(i_obs, :) = padded_stim(i_obs : (i_obs + n_p_x - 1));
 end
 
-% Let's visualize a small part of the design matrix just to see it
-clf; imagesc(-ntfilt+1:0, 1:50, Xdsgn(1:50,:));
+% There's actually a faster and more elegant way to build the design 
+% matrix. The design matrix here is known as a Hankel matrix, so we can 
+% build our design matrix as a Hankel matrix. A Hankel matrix is entirely
+% determined by its first column and last row. 
+% (Type 'help hankel' to learn more).
+x = hankel(padded_stim(1 : (end - n_p_x + 1)), ...
+           padded_stim((end - n_p_x + 1) : end));
+
+% Let's visualize a small part of the design matrix just to see it.
+clf
+n_obs_disp = 100;  % number of observations to display
+% Display an `n_r_x` by `n_obs_disp` portion of `x`.
+imagesc(-n_p_x + 1 : 0, 1 : n_obs_disp, x(1 : n_obs_disp, :));
+h_cb = colorbar;
+colormap(gray)
+h_cb.Label.String = 'stim intensity values';
 xlabel('lags before spike time bin');
 ylabel('time bin of response');
-title('Design matrix');
+title('design matrix');
 
-% Notice it has a structure where every row is a shifted copy of the row
-% above, which comes from the fact that for each time bin of response,
-% we're grabbing the preceding 'nkt' bins of stimulus as predictor
+% Notice that the design matrix has a structure where every row is a 
+% shifted copy of the row above, which comes from the fact that for each 
+% time bin of response, we're grabbing the preceding `n_p_x` bins of 
+% stimulus as the predictors.
 
-%% 3b. Build the design matrix: fast version
+% We now need to partition our data into 3 sets: a "training set", a
+% "validation" set, and a "test/holdout" set. We will use the training set 
+% to fit our models, we will use the validation set to see the performance
+% of our models after the training (and we will use this performance to
+% decide whether we want to adjust any hyperparameters of our models and
+% re-train), and when we have made final adjustments to the models, we will
+% use the test set to measure the performance of our final models. 
+% We use these divisions in order to prevent "overfitting": where a model
+% performs well on a training and/or validation set but fails to generalize
+% to the validation and/or test sets.
 
-% Of course there's a faster / more elegant way to do this. The design
-% matrix here is known as a 'Hankel' matrix, which is the same as a
-% Toeplitz matrix flipped left to right. A Hankel matrix is entirely
-% determined by its first column and bottom row.  (Type 'help hankel', to
-% learn more about this function).
+% Divide the complete dataset into a 60:20:20 training:validation:test 
+% ratio, and pick random observations for each subset based on this ratio.
+obs_all = [1 : n_obs]';
+n_obs_train = ceil(.6 * n_obs);
+n_obs_validate = (n_obs - n_obs_train) / 2;
+n_obs_test = n_obs_validate;
+% Throw error if sum of n_obs in subsets doesn't add up to `n_obs`.
+assert((n_obs_train + n_obs_validate + n_obs_test) == n_obs, ...
+       ['The number of total observations in the subsets do not match the '...
+        'number of total observations in the full dataset.']);
+% Set random number generator so we get predictable results.
+rng(1);
+% Random 60% of data.
+obs_train = datasample(obs_all, n_obs_train, 'replace', false);
+% Random 20% of the data that has not already been included in `obs_train`.
+obs_validate = datasample(setdiff(obs_all, obs_train), n_obs_validate, ...
+                          'replace', false);
+% Remaining 20% of the data.
+obs_test = setdiff(obs_all, [obs_train; obs_validate]);
+% Throw error if length of subset of obs doesn't match the n_obs of that
+% subset, or if the combined set of unique obs in the subsets doesn't equal
+% `obs_all`.
+assert(length(obs_train) == n_obs_train ...
+       && length(obs_validate) == n_obs_validate ...
+       && length(obs_test) == n_obs_test, ...
+       'The observations were not properly divided into subsets');
+assert(all(sort(unique([obs_train; obs_validate; obs_test])) == obs_all), ...
+       'The observations were not properly divided into subsets');
+% Set subsets.
+x_train = x(obs_train, :);
+x_validate = x(obs_validate, :);
+x_test = x(obs_test, :);
+y_train = y(obs_train);
+y_validate = y(obs_validate, :);
+y_test = y(obs_test, :);
 
-% Build design matrix without using a for loop
-paddedStim = [zeros(ntfilt-1,1); Stim]; % pad early bins of stimulus with zero
-Xdsgn = hankel(paddedStim(1:end-ntfilt+1), Stim(end-ntfilt+1:end));
+%% 4. The core features of a GLM
 
-% (You can check for you like that this gives the same matrix as the one
-% created above!)
-
-imagesc(-ntfilt+1:0, 1:50, Xdsgn(1:50,:));
-xlabel('lags before spike time bin');
-ylabel('time bin of response');
-title('Design matrix');
-
-
-%% === 4. Compute and visualize the spike-triggered average (STA) ====
-
-% When the stimulus is Gaussian white noise, the STA provides an unbiased
-% estimator for the filter in a GLM / LNP model (as long as the nonlinearity
-% results in an STA whose expectation is not zero; feel free 
-% to ignore this parenthetical remark if you're not interested in technical
-% details. It just means that if the nonlinearity is symmetric, 
-% eg. x^2, then this condition won't hold, and the STA won't be useful).
+% Now that we have our design matrix, we can start building and testing
+% GLMs to see how well they predict the spike data.
 %
-% In many cases it's useful to visualize the STA (even if your stimuli are
-% not white noise), just because if we don't see any kind of structure then
-% this may indicate that we have a problem (e.g., a mismatch between the
-% design matrix and binned spike counts.
+% In order to understand the usefulness of GLMs, let's first consider
+% standard 2-d normal linear regression on an x-y axis. In particular,
+% let's consider the curve (which in this case will be a line) of best fit
+% through the data. The curve of best fit will be the line that minimizes
+% the mean squared error between itself and our empirical y-values, out of
+% all possible curves. An unusual way we can think of this curve is as
+% estimating the mean values of a normal distribution (the y-values of the
+% curve) for each unique x-value. In other words, we can think of each
+% empirical y-value as drawn from a normal distribution whose mean is equal
+% to the value of the slope multiplied by the corresponding x-value + some
+% offset (this is exactly how we get the y-values for the line of best fit,
+% written in equation form as the classic `y = ax + b`).
+%
+% Now, imagine our response variable `y` clearly does not depend on `x` in
+% a linear relationship. Instead of thinking about each empirical y-value
+% as being drawn from a normal distribution, we can think of them as being
+% drawn from some other distribution, e.g. a Poisson distribution. So, the
+% y-values of our curve of best fit will be the mean values of a Poisson
+% distribution. It turns out that if we can think of our response variable
+% as being drawn from any distribution within the exponential family of
+% distributions, then we can think of the curve of best fit as estimating
+% the mean values of this distribution for each unique combination of 
+% predictors, and we can use a GLM to find these mean values, or i.e. the
+% curve of best fit.
+%
+% So, how does a GLM find the mean values of the specified response
+% variable distribution that will best fit the data?
+%
+% **A GLM treats these mean values as the output of a function that
+% operates on a linear combination of predictor variables
+%
+% `E(y) = f((B1 * x1) + (B2 * x2) + ... (Bn * xn))`
+% (where `E(y)` represents the mean values that will be output from the 
+% "mean function", `f`, that operates on a linear combination of predictor
+% variables (the `x` terms), that each have an associated weight (the `B`
+% terms)).
+%
+% and finds the optimal values for the `B` weights such that _the joint
+% probability of the observed data as a function of the unknown parameters
+% for the chosen response variable distribution_ (known as the "likelihood
+% function"), is maximized.** 
 
-% It's extremely easy to compute the STA now that we have the design matrix
-sta = (Xdsgn'*sps)/nsp;
+% This concept of maximum likelihood estimation (MLE) can be thought of as 
+% roughly equivalent to minimizing the mean squared error (or another error
+% function) between the resulting `E(y)` values and the empirical response
+% variable data. 
+% For an introduction to MLE, see this article:
+% https://towardsdatascience.com/probability-concepts-explained-maximum-likelihood-estimation-c7b4342fdbb1
+%
+% One way in which a GLM actually searches the parameter space to find
+% the best-fit parameters is via an optimization algorithm, e.g. gradient
+% descent (GD) on the negative likelihood function (minimizing the negative
+% likelihood function is equivalent to maximizing the likelihood function). 
+% For an introduction to GD, see this article:
+% https://towardsdatascience.com/gradient-descent-explained-9b953fc0d2c
+%
+% (*Note*, the inverse of the "mean function" is called the 
+% "link function", which expresses the linear combination of predictor 
+% variables as some function that operates on the mean values of the
+% response variable distribution, i.e. `f(E(y))`, The term "link function"
+% tends to be used more often than "mean function", so it's important to
+% understand that they are just inverses of each other.)
+%
+% The namesake for "G" in GLM comes from the fact that we can "generalize"
+% standard linear regression (which assumes the response variable is
+% normally distributed) to predict response variables that come from other
+% distributions in the exponential family. The "L" comes from the fact that
+% the function that predicts the mean values of the response variable must
+% operate on only linear combinations of predictor variables: e.g., we
+% could use `f((B1 * x1) - (B2 * x2 ^ 2))`, but not `f((B1 * (x1 ^ x2)))`.
+% We can use nonlinearities that operate on individual parameters, which is
+% why the `(B2 * x2 ^ 2)` term is fine, but they must only be combined
+% linearly, which is why the `(x1 ^ x2)` term is not allowed.
+%
+% So to summarize, a GLM has three components:
+%
+% 1) The response variable distribution (must belong to the exponential
+% family of distributions)
+% 2) The linear combination of predictor variables used to predict the mean
+% values of the response variable distribution
+% 3) The mean function: the function that operates on the linear
+% combination of predictor variables.
+%
+% and the core goal of a GLM is to find the optimal weights for the
+% predictor variables such that some error function between the output of
+% the mean function and the empirical response variable data is minimized.
+%
+% Our first models will resemble Gaussian GLMs (G-GLMs) with the identity
+% link function. The identity link function does not transform the linear 
+% combination of predictor variables in any way, hence the namesake 
+% "identity". So, we can think of these models as just performing standard
+% multiple linear (aka normal aka Gaussian) regression. 
+%
+% We will then move onto Poisson GLMs (P-GLMs), and we will use the 
+% log link function, which transforms the linear combination of predictor
+% variables by using them as exponents for base `e`. 
+% i.e. `E(y) = exp(B1 * x1 + ... Bn * xn)`
+%
+% There are multiple ways we can find estimates for the best-fit parameter
+% weights, `p`, for a G-GLM:
+%
+% 1) We can use the spike-triggered average (STA).
+% 2) We can use linear algebra and the normal equation.
+% 3) We can perform an optimization algorithm on the likelihood function.
+%
+% We will explain, use, and compare all three of these techniques below.
 
-% Plot it
-ttk = (-ntfilt+1:0)*dtStim; % time bins for STA (in seconds)
-plot(ttk,ttk*0, 'k--', ttk, sta, 'o-', 'linewidth', 2); axis tight;
-title('STA'); xlabel('time before spike (s)');
+%% 5a. Predicting spikes with a G-GLM: using the STA
 
-% If you're still using cell #1, this should look like a biphasic filter
-% with a negative lobe just prior to the spike time.
+% Our first method of estimating ? for a G-GLM will use the STA. We 
+% can think of the STA as a filter that, when convolved with the `n_p_x`
+% preceding stimulus values of an observation, predicts the spike count for
+% the observation.
+%
+% When the stimulus is Gaussian white noise, the STA is an unbiased
+% estimator for the best-fit parameters in a G-GLM. ^^why?? and what 
+% is meant by, and what happens, when the "nonlinearity results in an STA
+% whose expectation is zero" ?^^
+%
+% In many cases it's useful to visualize the STA regardless of if we're 
+% going to use it for data prediction, just because if we don't see any 
+% kind of structure in the STA then this may indicate that we have a 
+% problem (e.g. a mismatch between the design matrix and binned spike
+% counts).
 
-% (By contrast, if this looks like garbage then it's a good chance we did
-% something wrong!)
+% Now that we have the design matrix, it's easy to compute the STA.
+% Remember, we will use the training set for all model fits.
+s_t_a = (x_train' * y_train) / n_spks;
 
-%% 4b. whitened STA (ML fit to filter for linear-Gaussian GLM)
+% Plot the STA (this should look like a biphasic filter).
+clf
+s_t_a_bins = (-n_p_x + 1 : 0) * dt;  % time bins for STA (in s)
+plot(s_t_a_bins, s_t_a, 'o-', 'linewidth', 2);
+axis tight;
+title('STA');
+xlabel('time before spike (s)');
+ylabel('stim intensity')
 
 % If the stimuli are non-white, then the STA is generally a biased
-% estimator for the linear filter. In this case we may wish to compute the
-% "whitened" STA, which is also the maximum-likelihood estimator for the filter of a 
-% GLM with "identity" nonlinearity and Gaussian noise (also known as
-% least-squares regression). 
+% estimator for the best-fit parameters in a G-GLM ^(why??)^. In this case,
+% we can compute the whitened STA, which is the MLE for the best-fit
+% parameters of a G-GLM.
 %
-% If the stimuli have correlations this ML estimate may look like garbage
-% (more on this later when we come to "regularization").  But for this
-% dataset the stimuli are white, so we don't (in general) expect a big
-% difference from the STA.  (This is because the whitening matrix
-% (Xdsng'*Xdsgn)^{-1} is close to a scaled version of the identity.
+% If the stimuli have correlations, this ML estimate may look like garbage
+% (more on this in the tutorial on "regularization"). But for this dataset,
+% we know that the stimuli are white, so we don't (in general) expect a big
+% difference from the STA.
 
-% whitened STA
-wsta = (Xdsgn'*Xdsgn)\sta*nsp;
-% or equivalently inv(Xdsgn'*Xdsgn)*(Xdsgn'*sps)
-% this is just the least-squares regression formula!
+% First we whiten our design matrix.
+w_m_x = chol(inv(cov(x_train)));  % whitening matrix for `x`
+w_x = x_train * w_m_x;            % whitened design matrix
 
-% Let's plot them both (rescaled as unit vectors so we can see differences
-% in their shape).
-h = plot(ttk,ttk*0, 'k--', ttk, sta./norm(sta), 'o-',...
-    ttk, wsta./norm(wsta), 'o-', 'linewidth', 2); axis tight;
-legend(h(2:3), 'STA', 'wSTA', 'location', 'northwest');
-title('STA and whitened STA'); xlabel('time before spike (s)');
+% Then compute the whitened STA.
+w_s_t_a = w_x' * y_train / n_spks;
+% (*Note*: another roughly equivalent way to get the whitened STA is:
+% `w_s_t_a = inv(x' * x) * (x' * y)` 
+% This is the normal equation: the matrix form of least-squares 
+% regression!)
 
-%% 4c. Predicting spikes with a linear-Gaussian GLM
-
-% The whitened STA can actually be used to predict spikes because it
-% corresponds to a proper estimate of the model parameters (i.e., for a
-% Gaussian GLM). Let's inspect this prediction
-
-sppred_lgGLM = Xdsgn*wsta;  % predicted spikes from linear-Gaussian GLM
-
-% Let's see how good this "prediction" is
-% (Prediction in quotes because we are (for now) looking at the performance
-% on training data, not test data... so it isn't really a prediction!)
-
-% Plot real spike train and prediction
-stem(ttplot,sps(iiplot)); hold on;
-plot(ttplot,sppred_lgGLM(iiplot),'linewidth',2); hold off;
-title('linear-Gaussian GLM: spike count prediction');
-ylabel('spike count'); xlabel('time (s)');
-set(gca,'xlim', ttplot([1 end]));
-legend('spike count', 'lgGLM');
-
-%% 4d. Fitting and predicting with a linear-Gaussian-GLM with offset
-
-% Oops, one thing we forgot above was to include an offset or "constant"
-% term in the design matrix, which will allow our prediction to have
-% non-zero mean (since the stimulus here was normalized to have zero mean).
-
-% Updated design matrix
-Xdsgn2 = [ones(nT,1), Xdsgn]; % just add a column of ones
-
-% Compute whitened STA
-MLwts = (Xdsgn2'*Xdsgn2)\(Xdsgn2'*sps); % this is just the LS regression formula
-const = MLwts(1); % the additive constant
-wsta2 = MLwts(2:end); % the linear filter part
-
-% Now redo prediction (with offset)
-sppred_lgGLM2 = const + Xdsgn*wsta2;
-
-% Plot this stuff
-stem(ttplot,sps(iiplot)); hold on;
-h=plot(ttplot,sppred_lgGLM(iiplot),ttplot,sppred_lgGLM2(iiplot)); 
-set(h, 'linewidth', 2);  hold off;
-title('linear-Gaussian GLM: spike count prediction');
-ylabel('spike count'); xlabel('time (s)');
-set(gca,'xlim', ttplot([1 end]));
-legend('spike count', 'lgGLM', 'lgGLM w/ offset');
-
-% Let's report the relevant training error (squared prediction error on
-% training data) so far just to see how we're doing:
-mse1 = mean((sps-sppred_lgGLM).^2); % mean squared error, GLM no offset
-mse2 = mean((sps-sppred_lgGLM2).^2);% mean squared error, with offset
-rss = mean((sps-mean(sps)).^2); % squared error of spike train
-fprintf('Training perf (R^2): lin-gauss GLM, no offset: %.2f\n',1-mse1/rss);
-fprintf('Training perf (R^2): lin-gauss GLM, w/ offset: %.2f\n',1-mse2/rss);
-
-%% ======  5. Poisson GLM ====================
-
-% Let's finally move on to the LNP / Poisson GLM!
-
-% This is super-easy if we rely on built-in GLM fitting code
-pGLMwts = glmfit(Xdsgn,sps,'poisson', 'constant', 'on');
-pGLMconst = pGLMwts(1); % constant ("dc term"); 
-pGLMfilt = pGLMwts(2:end); % stimulus filter
-
-% The 'glmfit' function will fit a GLM for us. Here we have specified that
-% we want the noise model to be Poisson. The default setting for the link
-% function (the inverse of the nonlinearity) is 'log', so default
-% nonlinearity is 'exp'). The last argument tells glmfit to include a
-% constant offset parameter in the model, so we can use the 'Xdsgn' matrix
-% instead of the 'Xdsgn2' matrix that contains 1's in the first row.
-% 
-% The above call is thus equivalent to having done:
-% > pGLMwts = glmfit(Xdsgn2,sps,'poisson', 'link', 'log','constant','off');
-
-% Compute predicted spike rate on training data
-ratepred_pGLM = exp(pGLMconst + Xdsgn*pGLMfilt);
-%  (equivalent to if we had just written exp(Xdsgn2*pGLMwts))/dtStim;
-
-%%  5b. Make plots showing and spike rate predictions
-
-subplot(211);
-h = plot(ttk,ttk*0, 'k--', ttk, wsta2./norm(wsta2), 'o-',...
-    ttk, pGLMfilt./norm(pGLMfilt), 'o-', 'linewidth', 2); axis tight;
-legend(h(2:3), 'lin-gauss GLM', 'poisson GLM', 'location', 'northwest');
-title('(normalized) linear-Gaussian and Poisson GLM filter estimates'); 
+% Let's plot both the `s_t_a` and `w_s_t_a` rescaled as unit vectors (so we
+% can see any differences in their shape).
+clf
+plot(s_t_a_bins, (s_t_a ./ norm(s_t_a)), 'o-', 'linewidth', 2);
+hold on
+plot(s_t_a_bins, (w_s_t_a ./ norm(w_s_t_a)), 'o-', 'linewidth', 2);
+axis tight
+title('Unit norm STA and whitened STA'); 
 xlabel('time before spike (s)');
+ylabel('stim intensity');
+legend('STA', 'wSTA', 'location', 'northwest');
 
-subplot(212);
-stem(ttplot,sps(iiplot)); hold on;
-h = plot(ttplot,sppred_lgGLM2(iiplot),ttplot,ratepred_pGLM(iiplot)); 
-set(h, 'linewidth', 2);  hold off;
-title('spike rate predictions');
-ylabel('spikes / bin'); xlabel('time (s)');
-set(gca,'xlim', ttplot([1 end]));
-legend('spike count', 'lin-gauss GLM', 'exp-poisson GLM');
+% When rescaled as unit vectors, we see that the STA and WSTA
+% completely overlap, which confirms that our original data is indeed 
+% white.
 
-% Note the rate prediction here is in units of spikes/bin. If we wanted
-% spikes/sec, we could divide it by bin size dtStim.
+% Let's visualize the performance of the model for the first second of 
+% data, and then quantify the performance on the training and validation
+% sets.
+% Get model predictions.
+g_g_l_m_s_t_a_y_train = x_train * w_s_t_a;
+g_g_l_m_s_t_a_y_validate = x_validate * w_s_t_a;
+% Plot model prediction on top of empirical data.
+clf
+subplot(2, 1, 1)
+hold on
+stem(t_in_stim_bins_1s, y_train(stim_bins_1s), 'linewidth', 1.5);
+plot(t_in_stim_bins_1s, g_g_l_m_s_t_a_y_train(stim_bins_1s), ...
+     'linewidth', 1.5);
+axis tight
+title('model fits to 1s of training data');
+xlabel('time (s)');
+ylabel('spike count');
+legend('empirical spike count', 'G-GLM STA');
+subplot(2, 1, 2)
+hold on
+stem(t_in_stim_bins_1s, y_validate(stim_bins_1s), 'linewidth', 1.5);
+plot(t_in_stim_bins_1s, g_g_l_m_s_t_a_y_validate(stim_bins_1s), ...
+     'linewidth', 1.5);
+axis tight
+title('model fits to 1s of validation data');
+xlabel('time (s)');
+ylabel('spike count');
+legend('empirical spike count', 'G-GLM STA');
+% Get model performance.
+% Let's report the mean residuals for our binned spike count and the
+% relevant training error (mean squared prediction error) for the model.
+res_train = mean((y_train - mean(y_train)) .^ 2);
+g_g_l_m_s_t_a_m_s_e_train = mean((y_train - g_g_l_m_s_t_a_y_train) .^ 2);
+fprintf('Training perf (R^2): G-GLM STA: %.3f\n', ...
+        1 - (g_g_l_m_s_t_a_m_s_e_train / res_train));
+res_validate = mean((y_validate - mean(y_validate)) .^ 2);
+g_g_l_m_s_t_a_m_s_e_validate = ...
+    mean((y_validate - g_g_l_m_s_t_a_y_validate) .^ 2);
+fprintf('Validation perf (R^2): G-GLM STA: %.3f\n', ...
+        1 - (g_g_l_m_s_t_a_m_s_e_validate / res_validate));
 
+% We can see in the plots that it seems the model does trend upwards every
+% time there is a positive spike count, however, the model is far from
+% ideal. It seems to consistently under predict the spike count, and allows
+% for negative spike counts, which we know are impossible. Furthermore, the
+% R^2 values tell us that it only has 10.8% and 10.4% less error than the
+% mean residuals in predicting the data for the training and validation
+% sets, respectively. It does at least seem that our model hasn't overfit,
+% as it performs nearly as well on the validation set as on the training
+% set.
 
-%% 6. Non-parametric estimate of the nonlinearity
+%% 5b. Predicting spikes with a G-GLM: using the normal equation
 
-% The above fitting code assumes a GLM with an exponential nonlinearity
-% (i.e., governing the mapping from filter output to instantaneous spike
-% rate). We might wish to examine the adequacy of that assumption and make
-% a "nonparametric" estimate of the nonlinearity using a more flexible
+% It also turns out that the best-fit parameters for multiple linear 
+% regression can be perfectly found using linear algebra and the normal
+% equation. 
+% 
+% Let's call the error function that we are trying to minimize `J(p)`, 
+% where `p` is a vector of our parameter values, which is what we are 
+% trying to solve for. 
+%
+% To find the values of the parameters that minimize `J(p)`, we should take
+% the derivative of our cost function with respect to the parameters, 
+% i.e. `dp / dJ(p)`, set it equal to 0, and solve for p. 
+%
+% When we do so, we find:
+% `p = inv(x' * x) * (x' * y)`
+% To see this derivation in a nice, short article, see: 
+% https://towardsdatascience.com/normal-equation-a-matrix-approach-to-linear-regression-4162ee170243
+%
+% As mentioned in the previous section, this is the normal equation, the 
+% matrix form of least-squares regression.
+
+% Use normal equation (NE) to find params for g-glm
+g_g_l_m_n_e_p = inv(x_train' * x_train) * (x_train' * y_train);
+
+% Plot these parameters as a rescaled unit vector over the STA to compare
+clf
+hold on
+plot(s_t_a_bins, (w_s_t_a ./ norm(w_s_t_a)), 'o-', 'linewidth', 2);
+plot(s_t_a_bins, (g_g_l_m_n_e_p ./ norm(g_g_l_m_n_e_p)), 'o-', ....
+     'linewidth', 2);
+axis tight
+legend('WSTA', 'NE', 'location', 'northwest');
+title('Unit norm best-fit params from various methods for G-GLM'); 
+xlabel('time before spike (s)');
+ylabel('stim intensity');
+
+% When rescaled as unit vectors, we see that the parameters we return after
+% solving the normal equation overlap with the WSTA, which confirms that 
+% the WSTA is a good estimator for the best-fit parameters in a G-GLM.
+
+% Let's visualize the performance of the model for the first second of 
+% data, and then quantify the performance on the training and validation
+% sets.
+% Get model predictions.
+g_g_l_m_n_e_y_train = x_train * g_g_l_m_n_e_p;
+g_g_l_m_n_e_y_validate = x_validate * g_g_l_m_n_e_p;
+% Plot model prediction on top of previous model and empirical data.
+clf
+subplot(2, 1, 1)
+hold on
+stem(t_in_stim_bins_1s, y_train(stim_bins_1s), 'linewidth', 1.5);
+plot(t_in_stim_bins_1s, g_g_l_m_s_t_a_y_train(stim_bins_1s), ...
+     'linewidth', 1.5);
+plot(t_in_stim_bins_1s, g_g_l_m_n_e_y_train(stim_bins_1s), ...
+     'linewidth', 1.5);
+axis tight
+title('model fits to 1s of training data');
+xlabel('time (s)');
+ylabel('spike count');
+legend('empirical spike count', 'G-GLM STA', 'G-GLM NE');
+subplot(2, 1, 2)
+hold on
+stem(t_in_stim_bins_1s, y_validate(stim_bins_1s), 'linewidth', 1.5);
+plot(t_in_stim_bins_1s, g_g_l_m_s_t_a_y_validate(stim_bins_1s), ...
+     'linewidth', 1.5);
+plot(t_in_stim_bins_1s, g_g_l_m_n_e_y_validate(stim_bins_1s), ...
+     'linewidth', 1.5); 
+axis tight
+title('model fits to 1s of validation data');
+xlabel('time (s)');
+ylabel('spike count');
+legend('empirical spike count', 'G-GLM STA', 'G-GLM NE');
+% Get model performance.
+% Let's report the mean residuals for our binned spike count and the
+% relevant training error (mean squared prediction error) for the model.
+g_g_l_m_n_e_m_s_e_train = mean((y_train - g_g_l_m_n_e_y_train) .^ 2);
+fprintf('Training perf (R^2): G-GLM NE: %.3f\n', ...
+        1 - (g_g_l_m_n_e_m_s_e_train / res_train));
+g_g_l_m_n_e_m_s_e_validate = ...
+    mean((y_validate - g_g_l_m_n_e_y_validate) .^ 2);
+fprintf('Validation perf (R^2): G-GLM NE: %.3f\n', ...
+        1 - (g_g_l_m_n_e_m_s_e_validate / res_validate));
+
+% We can see in the plots and the reported R^2 values that the WSTA
+% performs nearly identically to the best-fit parameters for a G-GLM found
+% via solving the normal equation. We knew this would be the case when we 
+% compared the plot of the WSTA to the G-GLM NE parameters.
+
+%% 5c. Predicting spikes with a G-GLM: using MLE via FS on likelihood
+
+% Arguably the most traditional way to find the best fit parameters for a
+% model is to run an optimization algorithm on the likelihood function that
+% returns the parameter weights that maximize the likelihood function.
+% We could write code to 1) compute the likelihood as a function of our 
+% parameters, and 2) run our own optimization algorithm, but for now we
+% will use MATLAB's built-in `fitglm`, which uses the "Fisher's Scoring"
+% (FS) optimaztion algorithm on the likelihood function.
+
+% Create and fit model.
+g_g_l_m = fitglm(x_train, y_train, 'distribution', 'normal', ...
+               'link', 'identity', 'intercept', false);
+g_g_l_m_p = g_g_l_m.Coefficients.Estimate;
+
+% Plot these params as a rescaled unit vector over the others to compare.
+clf
+hold on
+plot(s_t_a_bins, (w_s_t_a ./ norm(w_s_t_a)), 'o-', 'linewidth', 2);
+plot(s_t_a_bins, (g_g_l_m_n_e_p ./ norm(g_g_l_m_n_e_p)), 'o-', ....
+     'linewidth', 2);
+plot(s_t_a_bins, (g_g_l_m_p ./ norm(g_g_l_m_p)), 'o-', 'linewidth', 2); 
+axis tight
+title('Unit norm best-fit params from various methods for G-GLM'); 
+xlabel('time before spike (s)');
+ylabel('stim intensity');
+legend('WSTA', 'NE', 'MLE-FS', 'location', 'northwest');
+
+% When rescaled as unit vectors, we see that the parameter estimates
+% returned by all of our parameter estimate methods overlap. We therefore
+% know that performance for this model will be roughly equivalent to our
+% two previous G-GLM models.
+%
+% One thing we didn't include in our model is a constant / intercept
+% parameter that will allow our spike count prediction to have a non-zero
+% mean. We can interpret this parameter as the baseline firing rate. There
+% are two ways we can account for this:
+% 1) We can add a column of ones directly to our design matrix
+x_train_2 = [ones(n_obs_train, 1), x_train];
+x_validate_2 = [ones(n_obs_validate, 1), x_validate];
+% And run `fitglm` on this design matrix.
+g_g_l_m = fitglm(x_train_2, y_train, 'distribution', 'normal', ...
+                 'link', 'identity', 'intercept', false);
+% 2) Or we can tell `fitglm` to include this intercept term via the
+% `'intercept'` name-value pair arg
+g_g_l_m_2 = fitglm(x_train, y_train, 'distribution', 'normal', ...
+                   'link', 'identity', 'intercept', true);
+% Ensure the parameter weights for both methods above are equal.
+g_g_l_m_p = g_g_l_m.Coefficients.Estimate;
+g_g_l_m_p_2 = g_g_l_m_2.Coefficients.Estimate;
+assert(all(round(g_g_l_m_p, 5) == round(g_g_l_m_p_2, 5)));
+
+% Let's now visualize and quantify the performance of this G-GLM with an
+% intercept parameter model to the previous model.
+% Get model predictions.
+g_g_l_m_y_train = x_train_2 * g_g_l_m_p;
+g_g_l_m_y_validate = x_validate_2 * g_g_l_m_p;
+% Plot model prediction on top of previous model and empirical data.
+clf
+subplot(2, 1, 1)
+hold on
+stem(t_in_stim_bins_1s, y_train(stim_bins_1s), 'linewidth', 1.5);
+plot(t_in_stim_bins_1s, g_g_l_m_n_e_y_train(stim_bins_1s), ...
+     'linewidth', 1.5);
+plot(t_in_stim_bins_1s, g_g_l_m_y_train(stim_bins_1s), ...
+     'linewidth', 1.5);
+axis tight
+title('model fits to 1s of training data');
+xlabel('time (s)');
+ylabel('spike count');
+legend('empirical spike count', 'G-GLM NE', 'G-GLM MLE-FS');
+subplot(2, 1, 2)
+hold on
+stem(t_in_stim_bins_1s, y_validate(stim_bins_1s), 'linewidth', 1.5);
+plot(t_in_stim_bins_1s, g_g_l_m_n_e_y_validate(stim_bins_1s), ...
+     'linewidth', 1.5);
+plot(t_in_stim_bins_1s, g_g_l_m_y_validate(stim_bins_1s), ...
+     'linewidth', 1.5); 
+axis tight
+title('model fits to 1s of validation data');
+xlabel('time (s)');
+ylabel('spike count');
+legend('empirical spike count', 'G-GLM NE', 'G-GLM MLE-FS');
+% Get model performance.
+% Let's report the mean residuals for our binned spike count and the
+% relevant training error (mean squared prediction error) for the model.
+g_g_l_m_m_s_e_train = mean((y_train - g_g_l_m_y_train) .^ 2);
+fprintf('Training perf (R^2): G-GLM MLE-FS: %.3f\n', ...
+        1 - (g_g_l_m_m_s_e_train / res_train));
+g_g_l_m_m_s_e_validate = ...
+    mean((y_validate - g_g_l_m_y_validate) .^ 2);
+fprintf('Validation perf (R^2): G-GLM MLE-FS: %.3f\n', ...
+        1 - (g_g_l_m_m_s_e_validate / res_validate));
+
+% We can see visually that this version of the model with an intercept term
+% fits the data better than G-GLMs without the intercept term, and the R^2
+% values increase to over .38 for both the training and validation sets.
+% However, this model still seems to undercount the data and still suffers
+% from outputting impossible negative spike counts. Since this latest G-GLM
+% is our best G-GLM model, going forward when we refer to the G-GLM we 
+% will be referring to this model.
+
+%% 6. Fitting & predicting with a Poisson GLM
+
+% In order to try and fix the issues that plagued our Gaussian GLM (namely,
+% outputting negative spike counts and undercounting the empirical data),
+% let's finally move on to constructing a Poisson GLM with a log link!
+
+% Use `fitglm` to construct the model.
+p_g_l_m = fitglm(x_train_2, y_train, 'distribution', 'poisson', ...
+                 'link', 'log', 'intercept', false);
+
+% Compute prediction of model's spike count values via the mean function. 
+% Because we are using a log link function, the mean function is the
+% inverse, `e^(...)`, or in MATLAB, `exp`.
+p_g_l_m_p = p_g_l_m.Coefficients.Estimate;
+p_g_l_m_y_train = exp(x_train_2 * p_g_l_m_p);
+% The predicted values are also returned directly in the glm model:
+p_g_l_m_y_train_2 = p_g_l_m.Fitted.Response;
+assert(all(round(p_g_l_m_y_train, 5) == round(p_g_l_m_y_train_2, 5)))
+p_g_l_m_y_validate = exp(x_validate_2 * p_g_l_m_p);
+% Visually and quantitatively compare the P-GLM to the best G-GLM.
+clf
+subplot(2, 1, 1)
+hold on
+stem(t_in_stim_bins_1s, y_train(stim_bins_1s), 'linewidth', 1.5);
+plot(t_in_stim_bins_1s, g_g_l_m_y_train(stim_bins_1s), ...
+     'linewidth', 1.5);
+plot(t_in_stim_bins_1s, p_g_l_m_y_train(stim_bins_1s), ...
+     'linewidth', 1.5);
+axis tight
+title('model fits to 1s of training data');
+xlabel('time (s)');
+ylabel('spike count');
+legend('empirical spike count', 'G-GLM', 'P-GLM');
+subplot(2, 1, 2)
+hold on
+stem(t_in_stim_bins_1s, y_validate(stim_bins_1s), 'linewidth', 1.5);
+plot(t_in_stim_bins_1s, g_g_l_m_y_validate(stim_bins_1s), ...
+     'linewidth', 1.5);
+plot(t_in_stim_bins_1s, p_g_l_m_y_validate(stim_bins_1s), ...
+     'linewidth', 1.5);
+axis tight
+title('model fits to 1s of validation data');
+xlabel('time (s)');
+ylabel('spike count');
+legend('empirical spike count', 'G-GLM', 'P-GLM');
+% Report training performance.
+p_g_l_m_m_s_e_train = mean((y_train - p_g_l_m_y_train) .^ 2);
+fprintf('Training perf (R^2): P-GLM: %.3f\n', ...
+        1 - (p_g_l_m_m_s_e_train / res_train));
+p_g_l_m_m_s_e_validate = ...
+    mean((y_validate - p_g_l_m_y_validate) .^ 2);
+fprintf('Validation perf (R^2): P-GLM: %.3f\n', ...
+        1 - (p_g_l_m_m_s_e_validate / res_validate));
+    
+% Here we see that the Poisson GLM model is the best fit to our data out of
+% the three models we have looked at so far, yet it still only has an R^2
+% value of only about 0.5 on both the test and validation sets.
+
+%% 7. Non-parametric estimate of the nonlinearity
+
+% The above P-GLM used an exponential nonlinearity (the mapping from filter
+% output (the best-fit parameters) to spike count). We can also use a 
+% "nonparametric" estimate of the nonlinearity using a more flexible
 % class of functions.
+%
+% Let's use the family of piecewise constant functions to predict the
+% spiking activity. This can be done via a simple estimation procedure:
+% 1. Compute the raw predicted output values from the Poisson GLM's
+% parameters (these output values are the ones that are computed before
+% getting passed through the mean function).
+% 2. Bin the raw predicted output values (where the number of bins = the
+% number of parameters).
+% 3. In each bin, compute the fraction of stimuli-elicted spikes. This
+% value will be that bin's (parameter's) weight for the corresponding raw
+% predicted output value for the nonparametric GLM (NP-GLM).
 
-% Let's use the family of piece-wise constant functions, which results in a
-% very simple estimation procedure:
-% 1. Bin the filter outputs
-% 2. In each bin, compute the fraction of stimuli elicted spikes
-
-% number of bins for parametrizing the nonlinearity f. (Try varying this!) 
-nfbins = 25; 
-
-% compute filtered stimulus
-rawfilteroutput = pGLMconst + Xdsgn*pGLMfilt;
-
-% bin filter output and get bin index for each filtered stimulus
-[cts,binedges,binID] = histcounts(rawfilteroutput,nfbins); 
-fx = binedges(1:end-1)+diff(binedges(1:2))/2; % use bin centers for x positions
-
-% now compute mean spike count in each bin
-fy = zeros(nfbins,1); % y values for nonlinearity
-for jj = 1:nfbins
-    fy(jj) = mean(sps(binID==jj));
+% Initialize the parameters array for the NP-GLM.
+np_g_l_m_p = zeros(n_p_x, 1);
+% Get P-GLM raw predicted output values.
+p_g_l_m_y_raw_train = x_train_2 * p_g_l_m_p;
+% The raw predicted values are also returned directly in the glm model:
+p_g_l_m_y_raw_train_2 = p_g_l_m.Fitted.LinearPredictor;
+assert(all(round(p_g_l_m_y_raw_train, 5) ...
+           == round(p_g_l_m_y_raw_train_2, 5)));
+p_g_l_m_y_raw_validate = x_validate_2 * p_g_l_m_p;       
+% Bin the raw predicted output values and get the bin edges and the bin
+% index of each observation in the raw predicted output.
+[p_g_l_m_y_raw_hist, bin_edges, bin_idxs] = ...
+    histcounts(p_g_l_m_y_raw_train, n_p_x);
+% Print the bin edges to the screen.
+fmt = ['Bin edges for the histogram of the raw predicted output are: \n' ...
+       repmat(' %.2f', 1, numel(bin_edges))];
+fprintf(fmt, bin_edges);
+fprintf('\n');
+% Compute mean spike count in each bin, and assign to the parameters array.
+for i_bin = 1 : n_p_x
+    np_g_l_m_p(i_bin) = mean(y_train(bin_idxs == i_bin));
 end
-fy = fy/dtStim; % divide by bin size to get units of sp/s;
 
-% Now let's embed this in a function we can evaluate at any point
-fnlin = @(x)(interp1(fx,fy,x,'nearest','extrap'));
+% Predict values for NP-GLM.
+% Create an array of values at the bin centers for plotting / prediction.
+x_bin_cntrs = bin_edges(1 : (end - 1)) + (diff(bin_edges(1:2)) / 2);
+% Now let's embed this in a function we can evaluate at any value in the
+% raw predicted output values. This function will be the equivalent of the
+% mean function.
+np_g_l_m_f = ...
+    @(xq) interp1(x_bin_cntrs, np_g_l_m_p, xq, 'nearest', 'extrap');
+% And let's use this function on the training and validation sets.
+np_g_l_m_y_train = np_g_l_m_f(p_g_l_m_y_raw_train);
+np_g_l_m_y_validate = np_g_l_m_f(p_g_l_m_y_raw_validate);
 
-% Make plots
-subplot(211); % Plot exponential and nonparametric nonlinearity estimate
-bar(fx,cts, 'hist');
-ylabel('count'); title('histogram of filter outputs');
+% Make plots: 1) histogram of raw predicted output values, 2) NP-GLM
+% model predictions for the values in the raw predicted output
+clf
+subplot(2, 1, 1);
+bar(x_bin_cntrs, p_g_l_m_y_raw_hist, 'hist');
+ylabel('count');
+xlabel('raw predicted output value');
+title('histogram of raw predicted output values');
+axis tight
+subplot(2, 1, 2);
+% Get x values at which to evaluate `np_g_l_m_f`.
+x_raw_p_g_l_m = bin_edges(1) : .01 : bin_edges(end);
+% Plot `npf_glm` at `x_raw_p_glm`.
+plot(x_raw_p_g_l_m, np_g_l_m_f(x_raw_p_g_l_m), 'linewidth', 1.5);
+% Overlay Poisson GLM model predictions at `x_raw_p_glm`.
+hold on
+plot(x_raw_p_g_l_m, exp(x_raw_p_g_l_m), 'linewidth', 1.5);
+xlabel('raw predicted output value');
+ylabel('spike count');
+legend('NPF', 'P-GLM');
+title('comparison of NPF to P-GLM');
+axis tight
 
-subplot(212);
-xx = binedges(1):.01:binedges(end);
-plot(xx,exp(xx)/dtStim,xx,fnlin(xx),'linewidth', 2);
-xlabel('filter output');
-ylabel('rate (sp/s)');
-legend('exponential f', 'nonparametric f', 'location', 'northwest');
-title('nonlinearity');
+% As we can see from the plots, the NPF model's predicted spike count per
+% `dt` bin tapers off under 3 for the highest raw predicted raw output
+% values, while the P-GLM predicts over 8 spikes per `dt` bin for these raw
+% output values. 
 
-% What do you think of the exponential fit? Does this look like a good
-% approximation to the nonparametric estimate of the nonlinearity?  Can you
-% propose a better parametric nonlinearity to use instead?  
-%
-% Advanced exercise: write your own log-likelihood function that allows you
-% to jointly optimize log-likelihood for the filter parameters and
-% nonlinearity.  (By contrast, here we have optimized filter params under
-% exponential nonlinearity and THEN fit the nonlinearity using these fixed
-% filter parameters).  We could, for example, iteratively climb the
-% log-likelihood as a function of filter params and nonlinearity params;
-% this is a method known as "coordinate ascent").
+% Let's visualize and quantify this model's performance compared to the
+% P-GLM and G-GLM.
+clf
+subplot(2, 1, 1)
+hold on
+stem(t_in_stim_bins_1s, y_train(stim_bins_1s), 'linewidth', 1.5);
+plot(t_in_stim_bins_1s, g_g_l_m_y_train(stim_bins_1s), ...
+     'linewidth', 1.5);
+plot(t_in_stim_bins_1s, p_g_l_m_y_train(stim_bins_1s), ...
+     'linewidth', 1.5);
+plot(t_in_stim_bins_1s, np_g_l_m_y_train(stim_bins_1s), ...
+     'linewidth', 1.5);
+axis tight
+title('model fits to 1s of training data');
+xlabel('time (s)');
+ylabel('spike count');
+legend('empirical spike count', 'G-GLM', 'P-GLM', 'NP-GLM');
+subplot(2, 1, 2)
+hold on
+stem(t_in_stim_bins_1s, y_validate(stim_bins_1s), 'linewidth', 1.5);
+plot(t_in_stim_bins_1s, g_g_l_m_y_validate(stim_bins_1s), ...
+     'linewidth', 1.5);
+plot(t_in_stim_bins_1s, p_g_l_m_y_validate(stim_bins_1s), ...
+     'linewidth', 1.5);
+plot(t_in_stim_bins_1s, np_g_l_m_y_validate(stim_bins_1s), ...
+     'linewidth', 1.5);
+axis tight
+title('model fits to 1s of validation data');
+xlabel('time (s)');
+ylabel('spike count');
+legend('empirical spike count', 'G-GLM', 'P-GLM', 'NP-GLM');
+% Report training performance.
+np_g_l_m_m_s_e_train = mean((y_train - np_g_l_m_y_train) .^ 2);
+fprintf('Training perf (R^2): NP-GLM: %.3f\n', ...
+        1 - (np_g_l_m_m_s_e_train / res_train));
+np_g_l_m_m_s_e_validate = ...
+    mean((y_validate - np_g_l_m_y_validate) .^ 2);
+fprintf('Validation perf (R^2): NP-GLM: %.3f\n', ...
+        1 - (np_g_l_m_m_s_e_validate / res_validate));
 
-%% 7. Quantifying performance: log-likelihood
+% Here we see that the NPF GLM model is the best fit to our data out of
+% the four models we have looked at so far, with an R^2 near 0.6 on both
+% the training and validation sets.
 
-% Lastly, compute log-likelihood for the Poisson GLMs we've used so far and
-% compare performance.
+% Advanced exercise: write your own function that acts on some parameters
+% to estimate the spike count, and then find the best-fit weights for these
+% parameters by first defining a likelihood function as a function of these 
+% parameters and then running an optimization algorithm on this likelihood
+% function. (For example, iteratively descend the negative log-likelihood 
+% via gradient descent).
 
-% LOG-LIKELIHOOD (this is what glmfit maximizes when fitting the GLM):
+%% 8a. Reviewing model performance: checking significance of parameters
+
+%% 8b. Reviewing model performance: residual analysis
+
+%% 8c. Reviewing model performance: AIC
+
+%% 8d. Reviewing model performance: KS Test on time-rescaled data
+
+%% 8e. Reviewing model performance: MLRT
+%% 8. Reviewing model performance: log-likelihood values
+
+% Checking individual parameters based on CI + wald test
+% Residual analysis
+% Log-likelihood + AIC analysis
+% KS test based on time-rescaling theorem for p-glm
+% MLRTs
+
+% Now that we've defined and trained some models, we should compute the
+% log-likelihood values for each model's best-fit to compare performances. 
+% The higher the log-likelihood value, the more likely the data is to be 
+% from the model (i.e. the better the model fit). ^how does this relate to
+% comparing our previous reporting of mse??^
+
+% LOG-LIKELIHOOD (this is what `fitglm` maximizes when fitting the GLM):
 % --------------
-% Let s be the spike count in a bin and r is the predicted spike rate
-% (known as "conditional intensity") in units of spikes/bin, then we have:   
+% Let `s` be the spike count in a bin and `r` the predicted spike rate
+% (known as "conditional intensity") in units of spikes/bin, then: 
 %
-%        Poisson likelihood:      P(s|r) = r^s/s! exp(-r)  
-%     giving log-likelihood:  log P(s|r) =  s log r - r   
+% Gaussian likelihood:  P(s;r) = 1 / (sigma * sqrt(2 * pi)) ...
+%                                * exp((-1 / 2) * ((r - s) / sigma) ^ 2))
+% Gaussian log-l:       log(P(s;r)) = log(1 / (sigma * sqrt(2 * pi))) ...
+%                                     * (-1 / 2 * ((r - s) / sigma) ^ 2)))                                      
+% Poisson likelihood:   P(s;r) = (r^s * exp(-r)) / s!
+% Poisson log-l:        log(P(s;r)) =  (s * log(r) - r) / log(s!)
 %
-% (where we have ignored the -log s! term because it is independent of the
-% parameters). The total log-likelihood is the summed log-likelihood over
-% time bins in the experiment.
+% (We can actually ignore the division term in the log-likelihood function
+% because it is independent of the parameters). The total log-likelihood is
+% the summed log-likelihood over time bins in the experiment. (Sum of the
+% log of probabilities = log of the product of probabilities).
 
-% 1. for GLM with exponential nonlinearity
-ratepred_pGLM = exp(pGLMconst + Xdsgn*pGLMfilt); % rate under exp nonlinearity
-LL_expGLM = sps'*log(ratepred_pGLM) - sum(ratepred_pGLM);
+% 1. Compute log-likelihood value for G-GLM w/ int.
+sigma = std(y);
+ll_g_glm = 1;
+for i_x = 1:length(y)
+    ll_g_glm = ...
+        ll_g_glm * log(1 / (sigma * sqrt(2 * pi))) ...
+        * (-1 / 2 * ((y_g_glm_2(i_x) - y(i_x)) / sigma) ^ 2);
+end
 
-% 2. for GLM with non-parametric nonlinearity
-ratepred_pGLMnp = dtStim*fnlin(pGLMconst + Xdsgn*pGLMfilt); % rate under nonpar nonlinearity
+ll_g_glm = log(1 / (sigma * sqrt(2 * pi))) ...
+           * (-1 / 2 * (sum((y_g_glm_2 - y)) / sigma) ^ 2);
+
+% 2. Compute log-likelihood value for P-GLM.
+ll_p_glm = y' * log(y_p_glm) - sum(y_p_glm);
+
+y_train' * log(p_g_l_m_y_train) - sum(p_g_l_m_y_train);
+
+ll = 0;
+for i_obs = 1 : n_obs_train
+    ll = ll + (y_train(i_obs) * log(p_g_l_m_y_train(i_obs)) ...
+         - p_g_l_m_y_train(i_obs));
+end
+
+
+prod((y .* log(y_p_glm) - y_p_glm) ...
+      ./ log(factorial(y)));
+
+prod((y .^ y_p_glm .* exp(-y_p_glm)) ./ factorial(y));
+
+% 3. Compute log-likelihood for NPF.
+% Get indices where `y_npf_glm` == 0 (we'll discard these from our ll
+% calculation because we can't take log of 0. By discarding these, we'll
+% effectively sent the contribution of these to the ll value to 0.)
+pos_spk_idxs = y_npf_glm > 0;
+ll_npf_glm = y(pos_spk_idxs)' * log(y_npf_glm(pos_spk_idxs)) ...
+             - sum(y_npf_glm(pos_spk_idxs));
+ratepred_pGLMnp = dt*np_g_l_m_f(pGLMconst + x*pGLMfilt); % rate under nonpar nonlinearity
 LL_npGLM = sps(sps>0)'*log(ratepred_pGLMnp(sps>0)) - sum(ratepred_pGLMnp);
 
 % Now compute the rate under "homogeneous" Poisson model that assumes a
 % constant firing rate with the correct mean spike count.
-ratepred_const = nsp/nT;  % mean number of spikes / bin
-LL0 = nsp*log(ratepred_const) - nT*ratepred_const;
+ratepred_const = n_spks/nT;  % mean number of spikes / bin
+LL0 = n_spks*log(ratepred_const) - nT*ratepred_const;
 
 % Single-spike information:
-% ------------------------
+% ------------------------ 
 % The difference of the loglikelihood and homogeneous-Poisson
 % loglikelihood, normalized by the number of spikes, gives us an intuitive
 % way to compare log-likelihoods in units of bits / spike.  This is a
-% quantity known as the (empirical) single-spike information.
-% [See Brenner et al, "Synergy in a Neural Code", Neural Comp 2000].
-% You can think of this as the number of bits (number of yes/no questions
-% that we can answer) about the times of spikes when we know the spike rate
-% output by the model, compared to when we only know the (constant) mean
-% spike rate. 
+% quantity known as the (empirical) single-spike information. [See Brenner
+% et al, "Synergy in a Neural Code", Neural Comp 2000]. You can think of
+% this as the number of bits we know (number of yes/no questions that we
+% can answer) about the times of spikes when we know the spike rate output
+% by the model, compared to when we only know the (constant) mean spike
+% rate.
 
-SSinfo_expGLM = (LL_expGLM - LL0)/nsp/log(2);
-SSinfo_npGLM = (LL_npGLM - LL0)/nsp/log(2);
+SSinfo_expGLM = (ll_p_glm - LL0)/n_spks/log(2);
+SSinfo_npGLM = (LL_npGLM - LL0)/n_spks/log(2);
 % (if we don't divide by log 2 we get it in nats)
 
 fprintf('\n empirical single-spike information:\n ---------------------- \n');
@@ -417,15 +932,15 @@ fprintf(' np-GLM: %.2f bits/sp\n',SSinfo_npGLM);
 % Let's plot the rate predictions for the two models 
 % --------------------------------------------------
 subplot(111);
-stem(ttplot,sps(iiplot)); hold on;
-plot(ttplot,ratepred_pGLM(iiplot),ttplot,ratepred_pGLMnp(iiplot),'linewidth',2); 
+stem(t_in_stim_bins_1s,sps(stim_bins_1s)); hold on;
+plot(t_in_stim_bins_1s,y_p_glm(stim_bins_1s),t_in_stim_bins_1s,ratepred_pGLMnp(stim_bins_1s),'linewidth',2); 
 hold off; title('rate predictions');
 ylabel('spikes / bin'); xlabel('time (s)');
-set(gca,'xlim', ttplot([1 end]));
+set(gca,'xlim', t_in_stim_bins_1s([1 end]));
 legend('spike count', 'exp-GLM', 'np-GLM');
 
 
-%% 8. Quantifying performance: AIC
+%% 9. Quantifying performance: AIC
 
 % Akaike information criterion (AIC) is a method for model comparison that
 % uses the maximum likelihood, penalized by the number of parameters.
@@ -436,8 +951,8 @@ legend('spike count', 'exp-GLM', 'np-GLM');
 % The model with lower AIC is 
 % their likelihood (at the ML estimate), penalized by the number of parameters  
 
-AIC_expGLM = -2*LL_expGLM + 2*(1+ntfilt); 
-AIC_npGLM = -2*LL_npGLM + 2*(1+ntfilt+nfbins);
+AIC_expGLM = -2*ll_p_glm + 2*(1+ntfilt); 
+AIC_npGLM = -2*LL_npGLM + 2*(1+ntfilt+n_p_npf);
 
 fprintf('\n AIC comparison:\n ---------------------- \n');
 fprintf('exp-GLM: %.1f\n',AIC_expGLM);
@@ -469,59 +984,74 @@ end
 % sets.  Fit the parameters on the training set, and compare models by
 % evaluating log-likelihood on test set.)
 
-%% 9. Simulating the GLM / making a raster plot
+%% 9. Simulating the GLM & making a raster plot
 
 % Lastly, let's simulate the response of the GLM to a repeated stimulus and
 % make raster plots 
 
-iiplot = 1:60; % time bins of stimulus to use
-ttplot = iiplot*dtStim; % time indices for these stimuli
-StimRpt = Stim(iiplot); % repeat stimulus 
-nrpts = 50;  % number of repeats
-frate = exp(pGLMconst+Xdsgn(iiplot,:)*pGLMfilt);% firing rate in each bin
+% Get chunk of stimulus to repeat, and get model's predicted spike count
+% for this chunk.
+stim_rpt = stim(stim_bins_1s);         % stimulus to repeat
+n_rpts = 50;                           % number of repeats of stim
+f_r = np_g_l_m_y_train(stim_bins_1s);  % firing rate (in spike counts)
 
-% Or uncomment this line to use the non-parametric nonlinearity instead:
-%frate = dtStim*fnlin(pGLMconst+Xdsgn(iiplot,:)*pGLMfilt);% firing rate in each bin
-
-% First, plot stimulus and true spikes
+% Plot.
+% First, plot stimulus and true spike counts.
+clf
 subplot(611);
-plot(ttplot,Stim(iiplot), 'linewidth', 2);  axis tight;
+plot(t_in_stim_bins_1s, stim_rpt, 'linewidth', 2);
+axis tight;
 title('raw stimulus (full field flicker)');
-ylabel('stim intensity'); set(gca,'xticklabel', {});
+ylabel('stim intensity'); 
+set(gca, 'xticklabel', {});
 subplot(612);
-tspplot = tsp((tsp>=ttplot(1))&(tsp<ttplot(end)));
-plot(tspplot, 1, 'ko', 'markerfacecolor', 'k');
-set(gca,'xlim', ttplot([1 end]));
-title('true spike times');
+% Get and plot the spike counts that happen within `bins`.
+stem(t_in_stim_bins_1s, spk_ts_hist(stim_bins_1s), 'linewidth', 2);
+set(gca,'xlim', t_in_stim_bins_1s([1 end]));
+title('true spike counts');
+ylabel('spike count');
 set(gca,'xticklabel', {});
-
-% Simulate spikes using draws from a Bernoulli (coin flipping) process
-spcounts = poissrnd(repmat(frate',nrpts,1)); % sample spike counts for each time bin
-subplot(6,1,3:6);
-imagesc(ttplot,1:nrpts, spcounts);
+% Simulate spikes per bin by outputting a value from a Poisson process with
+% rate parameter equal to `f_r` in that bin.
+spk_cnts = poissrnd(repmat(f_r', n_rpts, 1));
+subplot(6, 1, 3:6);
+imagesc(t_in_stim_bins_1s, 1 : n_rpts, spk_cnts);
 ylabel('repeat #');
 xlabel('time (s)');
-title('GLM spike trains');
+title('simulated GLM spike trains');
+h_cb = colorbar;
+h_cb.Location = 'southoutside';
+h_cb.Label.String = 'spike count';
 
-%% Optional: redo using finer time bins, so we get maximum 1 spike per bin
+%% 10: Redo using finer time bins, so we report a binary response variable
 
-upsampfactor = 100; % divide each time bin by this factor
-dt_fine = dtStim/upsampfactor; % use bins 100 time bins finer
-tt_fine = dt_fine/2:dt_fine:ttplot(end);
+dt_2 = 0.0001;  % new bin length (.1 ms)
+up_s_x = (stim_ts(2) - stim_ts(1)) / dt_2;  % upsample factor for new `dt`
+t_in_stim_bins_1s_2 = 0 : dt : 1;
 
-% Compute the fine-time-bin firing rate (which must be scaled down by bin width)
-frate_fine = interp1(ttplot,frate,tt_fine,'nearest','extrap')'/upsampfactor;
+% Compute the fine-time-bin firing rate (which must be scaled down by bin
+% width)
+f_r_2 = interp1(t_in_stim_bins_1s, f_r, t_in_stim_bins_1s_2, ...
+                'nearest', 'extrap') ./ up_s_x;
 
 % now draw fine-timescale spike train
-spcounts_fine = poissrnd(repmat(frate_fine',nrpts,1)); % sample spike counts for each time bin
+spk_cnts_2 = poissrnd(repmat(f_r_2, n_rpts, 1));
 
-% Make plot
+% Re-make plot.
+subplot(6, 1, 2)
+% Now plot spike raster instead of spike counts.
+spk_ts_in_1s = ...
+    spk_ts_cell((spk_ts_cell >= t_in_stim_bins_1s(1)) ...
+                 & (spk_ts_cell < t_in_stim_bins_1s(end)));
+plot(spk_ts_in_1s, 1, 'bo');
 subplot(6,1,3:6);
-imagesc(ttplot,1:nrpts, spcounts_fine);
+imagesc(t_in_stim_bins_1s_2, 1 : n_rpts, spk_cnts_2);
 ylabel('repeat #');
 xlabel('time (s)');
-title('GLM spike trains');
-
+title('simulated GLM spike trains');
+h_cb = colorbar;
+h_cb.Location = 'southoutside';
+h_cb.Label.String = 'spike count';
 
 %% Suggested Exercises (advanced)
 % -------------------------------
