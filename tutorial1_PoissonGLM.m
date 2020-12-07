@@ -15,17 +15,12 @@
 % values over time).
 %
 % The purpose of using GLMs in this context is to predict the response
-% variable - the spiking activity (either rate or binned counts) - from 
+% variable - the spiking activity in either rate or binned counts - from 
 % predictor variables - the past intensity values of the stimulus.
 %
 % DATASET: this tutorial is designed to run with retinal ganglion cell
 % spike train data from Uzzell & Chichilnisky 2004. The dataset can be 
 % made available upon request to the authors.
-%
-% @todo: 1) rephrase some things in classic GLM terminology (mention the
-% response variable distribution, the link function, the mean function). 2)
-% mention likelihood function (and show computation) in section 6.
-
 
 %% How to use this tutorial:
 %
@@ -224,37 +219,35 @@ y_test = y(obs_test, :);
 % through the data. The curve of best fit will be the line that minimizes
 % the mean squared error between itself and our empirical y-values, out of
 % all possible curves. An unusual way we can think of this curve is as
-% estimating the mean values of a normal distribution (the y-values of the
+% estimating the mean values of normal distributions (the y-values of the
 % curve) for each unique x-value. In other words, we can think of each
-% empirical y-value as drawn from a normal distribution whose mean is equal
-% to the value of the slope multiplied by the corresponding x-value + some
-% offset (this is exactly how we get the y-values for the line of best fit,
-% written in equation form as the classic `y = ax + b`).
+% empirical y-value as drawn from a separate normal distribution whose mean
+% is equal to the y-value of the line of best fit at the corresponding 
+% x-value. We can write this in equation form as the classic `y = ax + b`.
 %
 % Now, imagine our response variable `y` clearly does not depend on `x` in
 % a linear relationship. Instead of thinking about each empirical y-value
 % as being drawn from a normal distribution, we can think of them as being
-% drawn from some other distribution, e.g. a Poisson distribution. So, the
-% y-values of our curve of best fit will be the mean values of a Poisson
-% distribution. It turns out that if we can think of our response variable
-% as being drawn from any distribution within the exponential family of
-% distributions, then we can think of the curve of best fit as estimating
-% the mean values of this distribution for each unique combination of 
-% predictors, and we can use a GLM to find these mean values, or i.e. the
-% curve of best fit.
+% drawn from some other distribution, e.g. a Poisson distribution. So, each
+% y-value of our curve of best fit will be the mean value of a Poisson
+% distribution, parametrized by the corresponding x-value. It turns out
+% that if we can think of our response variable as being drawn from any
+% distribution within the exponential family of distributions, then we can
+% think of each point on the curve of best fit as estimating the mean value
+% of this distribution, parametrized by the corresponding predictors, and 
+% we can use a GLM to find these mean values, or i.e. the curve of best 
+% fit.
 %
 % So, how does a GLM find the mean values of the specified response
 % variable distribution that will best fit the data?
 %
 % **A GLM treats these mean values as the output of a function that
 % operates on a linear combination of predictor variables
-%
 % `E(y) = f((B1 * x1) + (B2 * x2) + ... (Bn * xn))`
 % (where `E(y)` represents the mean values that will be output from the 
 % "mean function", `f`, that operates on a linear combination of predictor
 % variables (the `x` terms), that each have an associated weight (the `B`
 % terms)).
-%
 % and finds the optimal values for the `B` weights such that _the joint
 % probability of the observed data as a function of the unknown parameters
 % for the chosen response variable distribution_ (known as the "likelihood
@@ -277,7 +270,7 @@ y_test = y(obs_test, :);
 % (*Note*, the inverse of the "mean function" is called the 
 % "link function", which expresses the linear combination of predictor 
 % variables as some function that operates on the mean values of the
-% response variable distribution, i.e. `f(E(y))`, The term "link function"
+% response variable distribution, i.e. `f(E(y))`. The term "link function"
 % tends to be used more often than "mean function", so it's important to
 % understand that they are just inverses of each other.)
 %
@@ -305,6 +298,12 @@ y_test = y(obs_test, :);
 % predictor variables such that some error function between the output of
 % the mean function and the empirical response variable data is minimized.
 %
+% (In order to compute the likelihood, there is actually also a fourth
+% componenet, the "variance function", which determines how the variance
+% (aka scale) depends on the mean (aka shape): `Var(y) = f(E(y))` for the
+% response variable distribution. The variance values are not directly used
+% in computing the fitted model values, however.)
+%
 % Our first models will resemble Gaussian GLMs (G-GLMs) with the identity
 % link function. The identity link function does not transform the linear 
 % combination of predictor variables in any way, hence the namesake 
@@ -327,7 +326,7 @@ y_test = y(obs_test, :);
 
 %% 5a. Predicting spikes with a G-GLM: using the STA
 
-% Our first method of estimating ? for a G-GLM will use the STA. We 
+% Our first method of estimating `p` for a G-GLM will use the STA. We 
 % can think of the STA as a filter that, when convolved with the `n_p_x`
 % preceding stimulus values of an observation, predicts the spike count for
 % the observation.
@@ -354,11 +353,11 @@ plot(s_t_a_bins, s_t_a, 'o-', 'linewidth', 2);
 axis tight;
 title('STA');
 xlabel('time before spike (s)');
-ylabel('stim intensity')
+ylabel('stim intensity');
 
 % If the stimuli are non-white, then the STA is generally a biased
-% estimator for the best-fit parameters in a G-GLM ^(why??)^. In this case,
-% we can compute the whitened STA, which is the MLE for the best-fit
+% estimator for the best-fit parameters in a G-GLM ^^(why??)^^. In this
+% case, we can compute the whitened STA, which is the MLE for the best-fit
 % parameters of a G-GLM.
 %
 % If the stimuli have correlations, this ML estimate may look like garbage
@@ -446,13 +445,14 @@ fprintf('Validation perf (R^2): G-GLM STA: %.3f\n', ...
 
 %% 5b. Predicting spikes with a G-GLM: using the normal equation
 
-% It also turns out that the best-fit parameters for multiple linear 
-% regression can be perfectly found using linear algebra and the normal
-% equation. 
+% It turns out that the best-fit parameters for multiple linear regression
+% can be perfectly found using the normal equation from linear algebra.
 % 
 % Let's call the error function that we are trying to minimize `J(p)`, 
 % where `p` is a vector of our parameter values, which is what we are 
-% trying to solve for. 
+% trying to solve for. So `J(p) = 1/2 * n * sum((h(x, p) - y) ^ 2), where
+% `n` is the number of observations, and `h(x, p)` is the predicted output
+% for `x` parametrized by `p`.
 %
 % To find the values of the parameters that minimize `J(p)`, we should take
 % the derivative of our cost function with respect to the parameters, 
@@ -466,10 +466,10 @@ fprintf('Validation perf (R^2): G-GLM STA: %.3f\n', ...
 % As mentioned in the previous section, this is the normal equation, the 
 % matrix form of least-squares regression.
 
-% Use normal equation (NE) to find params for g-glm
+% Use normal equation (NE) to find params for g-glm.
 g_g_l_m_n_e_p = inv(x_train' * x_train) * (x_train' * y_train);
 
-% Plot these parameters as a rescaled unit vector over the STA to compare
+% Plot these parameters as a rescaled unit vector over the STA to compare.
 clf
 hold on
 plot(s_t_a_bins, (w_s_t_a ./ norm(w_s_t_a)), 'o-', 'linewidth', 2);
@@ -564,7 +564,7 @@ legend('WSTA', 'NE', 'MLE-FS', 'location', 'northwest');
 % When rescaled as unit vectors, we see that the parameter estimates
 % returned by all of our parameter estimate methods overlap. We therefore
 % know that performance for this model will be roughly equivalent to our
-% two previous G-GLM models.
+% two previous G-GLMs.
 %
 % One thing we didn't include in our model is a constant / intercept
 % parameter that will allow our spike count prediction to have a non-zero
@@ -585,8 +585,8 @@ g_g_l_m_p = g_g_l_m.Coefficients.Estimate;
 g_g_l_m_p_2 = g_g_l_m_2.Coefficients.Estimate;
 assert(all(round(g_g_l_m_p, 5) == round(g_g_l_m_p_2, 5)));
 
-% Let's now visualize and quantify the performance of this G-GLM with an
-% intercept parameter model to the previous model.
+% Let's now visualize and quantify the performance of this G-GLM (with an
+% intercept parameter) to the previous model.
 % Get model predictions.
 g_g_l_m_y_train = x_train_2 * g_g_l_m_p;
 g_g_l_m_y_validate = x_validate_2 * g_g_l_m_p;
@@ -632,8 +632,8 @@ fprintf('Validation perf (R^2): G-GLM MLE-FS: %.3f\n', ...
 % values increase to over .38 for both the training and validation sets.
 % However, this model still seems to undercount the data and still suffers
 % from outputting impossible negative spike counts. Since this latest G-GLM
-% is our best G-GLM model, going forward when we refer to the G-GLM we 
-% will be referring to this model.
+% is our best G-GLM, going forward when we refer to the G-GLM we will be
+% referring to this model.
 
 %% 6. Fitting & predicting with a Poisson GLM
 
@@ -650,10 +650,11 @@ p_g_l_m = fitglm(x_train_2, y_train, 'distribution', 'poisson', ...
 % inverse, `e^(...)`, or in MATLAB, `exp`.
 p_g_l_m_p = p_g_l_m.Coefficients.Estimate;
 p_g_l_m_y_train = exp(x_train_2 * p_g_l_m_p);
-% The predicted values are also returned directly in the glm model:
-p_g_l_m_y_train_2 = p_g_l_m.Fitted.Response;
-assert(all(round(p_g_l_m_y_train, 5) == round(p_g_l_m_y_train_2, 5)))
 p_g_l_m_y_validate = exp(x_validate_2 * p_g_l_m_p);
+% The predicted values are also returned directly in the glm object:
+p_g_l_m_y_train_2 = p_g_l_m.Fitted.Response;
+% Ensure model values for both methods above are equal.
+assert(all(round(p_g_l_m_y_train, 5) == round(p_g_l_m_y_train_2, 5)))
 % Visually and quantitatively compare the P-GLM to the best G-GLM.
 clf
 subplot(2, 1, 1)
@@ -689,9 +690,9 @@ p_g_l_m_m_s_e_validate = ...
 fprintf('Validation perf (R^2): P-GLM: %.3f\n', ...
         1 - (p_g_l_m_m_s_e_validate / res_validate));
     
-% Here we see that the Poisson GLM model is the best fit to our data out of
-% the three models we have looked at so far, yet it still only has an R^2
-% value of only about 0.5 on both the test and validation sets.
+% Here we see that the Poisson GLM is the best fit to our data out of the
+% three models we have looked at so far, yet it still only has an R^2 value
+% of only about 0.5 on both the test and validation sets.
 
 %% 7. Non-parametric estimate of the nonlinearity
 
@@ -715,11 +716,12 @@ fprintf('Validation perf (R^2): P-GLM: %.3f\n', ...
 np_g_l_m_p = zeros(n_p_x, 1);
 % Get P-GLM raw predicted output values.
 p_g_l_m_y_raw_train = x_train_2 * p_g_l_m_p;
-% The raw predicted values are also returned directly in the glm model:
+p_g_l_m_y_raw_validate = x_validate_2 * p_g_l_m_p;
+% The raw predicted values are also returned directly in the glm object:
 p_g_l_m_y_raw_train_2 = p_g_l_m.Fitted.LinearPredictor;
+% Ensure raw predicted values for both methods above are equal.
 assert(all(round(p_g_l_m_y_raw_train, 5) ...
            == round(p_g_l_m_y_raw_train_2, 5)));
-p_g_l_m_y_raw_validate = x_validate_2 * p_g_l_m_p;       
 % Bin the raw predicted output values and get the bin edges and the bin
 % index of each observation in the raw predicted output.
 [p_g_l_m_y_raw_hist, bin_edges, bin_idxs] = ...
@@ -760,7 +762,7 @@ subplot(2, 1, 2);
 x_raw_p_g_l_m = bin_edges(1) : .01 : bin_edges(end);
 % Plot `npf_glm` at `x_raw_p_glm`.
 plot(x_raw_p_g_l_m, np_g_l_m_f(x_raw_p_g_l_m), 'linewidth', 1.5);
-% Overlay Poisson GLM model predictions at `x_raw_p_glm`.
+% Overlay Poisson GLM predictions at `x_raw_p_glm`.
 hold on
 plot(x_raw_p_g_l_m, exp(x_raw_p_g_l_m), 'linewidth', 1.5);
 xlabel('raw predicted output value');
@@ -814,9 +816,9 @@ np_g_l_m_m_s_e_validate = ...
 fprintf('Validation perf (R^2): NP-GLM: %.3f\n', ...
         1 - (np_g_l_m_m_s_e_validate / res_validate));
 
-% Here we see that the NPF GLM model is the best fit to our data out of
-% the four models we have looked at so far, with an R^2 near 0.6 on both
-% the training and validation sets.
+% Here we see that the NPF GLM is the best fit to our data out of the four
+% models we have looked at so far, with an R^2 near 0.6 on both the
+% training and validation sets.
 
 % Advanced exercise: write your own function that acts on some parameters
 % to estimate the spike count, and then find the best-fit weights for these
@@ -827,87 +829,82 @@ fprintf('Validation perf (R^2): NP-GLM: %.3f\n', ...
 
 %% 8a. Reviewing model performance: checking significance of parameters
 
-%% 8b. Reviewing model performance: residual analysis
-
-%% 8c. Reviewing model performance: AIC
-
-%% 8d. Reviewing model performance: KS Test on time-rescaled data
-
-%% 8e. Reviewing model performance: MLRT
-%% 8. Reviewing model performance: log-likelihood values
-
 % Checking individual parameters based on CI + wald test
 % Residual analysis
 % Log-likelihood + AIC analysis
 % KS test based on time-rescaling theorem for p-glm
 % MLRTs
 
+
+%% 8b. Reviewing model performance: residual analysis
+
+%% 8c. Reviewing model performance: Log-likelihood values & AIC
+
 % Now that we've defined and trained some models, we should compute the
 % log-likelihood values for each model's best-fit to compare performances. 
 % The higher the log-likelihood value, the more likely the data is to be 
-% from the model (i.e. the better the model fit). ^how does this relate to
-% comparing our previous reporting of mse??^
+% from the model (i.e. the better the model fit). ^^how does this relate to
+% comparing our previous reporting of mse??^^
 
 % LOG-LIKELIHOOD (this is what `fitglm` maximizes when fitting the GLM):
 % --------------
-% Let `s` be the spike count in a bin and `r` the predicted spike rate
-% (known as "conditional intensity") in units of spikes/bin, then: 
+% Let `s` be the empirical spike count in a bin and `r` the predicted spike 
+% rate (known as "conditional intensity") in units of spikes/bin, then: 
 %
 % Gaussian likelihood:  P(s;r) = 1 / (sigma * sqrt(2 * pi)) ...
-%                                * exp((-1 / 2) * ((r - s) / sigma) ^ 2))
-% Gaussian log-l:       log(P(s;r)) = log(1 / (sigma * sqrt(2 * pi))) ...
-%                                     * (-1 / 2 * ((r - s) / sigma) ^ 2)))                                      
+%                                * exp((-1 / 2) * ((r - s) / sigma) ^ 2)
+% Gaussian log-l:       log(P(s;r)) = -log(sigma * sqrt(2 * pi)) ...
+%                                     - ((1 / 2) * ((r - s) / sigma) ^ 2)
 % Poisson likelihood:   P(s;r) = (r^s * exp(-r)) / s!
-% Poisson log-l:        log(P(s;r)) =  (s * log(r) - r) / log(s!)
+% Poisson log-l:        log(P(s;r)) =  (s * log(r) - r) - log(s!)
 %
-% (We can actually ignore the division term in the log-likelihood function
-% because it is independent of the parameters). The total log-likelihood is
-% the summed log-likelihood over time bins in the experiment. (Sum of the
-% log of probabilities = log of the product of probabilities).
+% These formulae are to compute the probability of observing `s` in a
+% particular bin (observation) given the `r` for that bin. The total 
+% log-likelihood then is the summed log-likelihood over all bins. 
+% (Sum of the log of probabilities = log of the product of probabilities).
 
-% 1. Compute log-likelihood value for G-GLM w/ int.
-sigma = std(y);
-ll_g_glm = 1;
-for i_x = 1:length(y)
-    ll_g_glm = ...
-        ll_g_glm * log(1 / (sigma * sqrt(2 * pi))) ...
-        * (-1 / 2 * ((y_g_glm_2(i_x) - y(i_x)) / sigma) ^ 2);
-end
+% Compute log-likelihood value for G-GLM.
+sigma = sqrt(g_g_l_m.Dispersion);
+g_g_l_m_ll = ...
+    sum(-log(sigma * sqrt(2 * pi))...
+        - ((1 / 2) .* (((g_g_l_m_y_train - y_train) ./ sigma) .^2)));
 
-ll_g_glm = log(1 / (sigma * sqrt(2 * pi))) ...
-           * (-1 / 2 * (sum((y_g_glm_2 - y)) / sigma) ^ 2);
+% Compute log-likelihood value for P-GLM.
+p_g_l_m_ll = y_train' * log(p_g_l_m_y_train) - sum(p_g_l_m_y_train) ...
+             - sum(log(factorial(y_train)));
 
-% 2. Compute log-likelihood value for P-GLM.
-ll_p_glm = y' * log(y_p_glm) - sum(y_p_glm);
+% The log-likelihood values are also returned directly in the glm object;
+% ensure the above calculations match those from the model.
+assert(round(p_g_l_m_ll, 5) == round(p_g_l_m.LogLikelihood, 5))
+assert(round(g_g_l_m_ll, 5, 'significant') == ...
+    round(g_g_l_m.LogLikelihood, 5, 'significant'))
 
-y_train' * log(p_g_l_m_y_train) - sum(p_g_l_m_y_train);
+% We can also compute a log-likelihood value estimate for the NP-GLM by 
+% using the Poisson log-likelihood function on the NP-GLM predicted values.
+% To avoid negative infinites in our computation, we will first replace 0
+% values predicted by the model
+np_g_l_m_y_train_nonzero = np_g_l_m_y_train;
+np_g_l_m_y_train_nonzero(np_g_l_m_y_train_nonzero == 0) = ...
+    min(p_g_l_m_y_train);
+np_g_l_m_ll = y_train' * log(np_g_l_m_y_train_nonzero) ...
+              - sum(np_g_l_m_y_train_nonzero) ...
+              - sum(log(factorial(y_train)));
 
-ll = 0;
-for i_obs = 1 : n_obs_train
-    ll = ll + (y_train(i_obs) * log(p_g_l_m_y_train(i_obs)) ...
-         - p_g_l_m_y_train(i_obs));
-end
+% Lastly, compute log-likelihood for a "homogeneous-Poisson" model (HP-GLM)
+% that assumes a constant firing rate with the correct mean spike count.
+mean_rate_param = n_spks / n_obs;
+hp_g_l_m_ll = sum(y_train' * log(mean_rate_param)) ...
+              - (mean_rate_param * n_obs) - sum(log(factorial(y_train)));
 
+% Print log-likelihood values for the different models.
+fprintf('The log-likelihood value for the HP-GLM is %.3f\n', hp_g_l_m_ll);
+fprintf('The log-likelihood value for the G-GLM is %.3f\n', g_g_l_m_ll);
+fprintf('The log-likelihood value for the P-GLM is %.3f\n', p_g_l_m_ll);
+fprintf('The log-likelihood value for the NP-GLM is %.3f\n', np_g_l_m_ll);
 
-prod((y .* log(y_p_glm) - y_p_glm) ...
-      ./ log(factorial(y)));
-
-prod((y .^ y_p_glm .* exp(-y_p_glm)) ./ factorial(y));
-
-% 3. Compute log-likelihood for NPF.
-% Get indices where `y_npf_glm` == 0 (we'll discard these from our ll
-% calculation because we can't take log of 0. By discarding these, we'll
-% effectively sent the contribution of these to the ll value to 0.)
-pos_spk_idxs = y_npf_glm > 0;
-ll_npf_glm = y(pos_spk_idxs)' * log(y_npf_glm(pos_spk_idxs)) ...
-             - sum(y_npf_glm(pos_spk_idxs));
-ratepred_pGLMnp = dt*np_g_l_m_f(pGLMconst + x*pGLMfilt); % rate under nonpar nonlinearity
-LL_npGLM = sps(sps>0)'*log(ratepred_pGLMnp(sps>0)) - sum(ratepred_pGLMnp);
-
-% Now compute the rate under "homogeneous" Poisson model that assumes a
-% constant firing rate with the correct mean spike count.
-ratepred_const = n_spks/nT;  % mean number of spikes / bin
-LL0 = n_spks*log(ratepred_const) - nT*ratepred_const;
+% We see here that the log-likelihood values align with the performance of
+% our models: the models sorted descendingly by log-likelihood values
+% are: NP-GLM, P-GLM, G-GLM, HP-GLM.
 
 % Single-spike information:
 % ------------------------ 
@@ -939,8 +936,6 @@ ylabel('spikes / bin'); xlabel('time (s)');
 set(gca,'xlim', t_in_stim_bins_1s([1 end]));
 legend('spike count', 'exp-GLM', 'np-GLM');
 
-
-%% 9. Quantifying performance: AIC
 
 % Akaike information criterion (AIC) is a method for model comparison that
 % uses the maximum likelihood, penalized by the number of parameters.
@@ -983,6 +978,9 @@ end
 % hyperparameters. The basic idea is to split data into training and test
 % sets.  Fit the parameters on the training set, and compare models by
 % evaluating log-likelihood on test set.)
+%% 8d. Reviewing model performance: KS Test on time-rescaled data
+
+%% 8e. Reviewing model performance: MLRT
 
 %% 9. Simulating the GLM & making a raster plot
 
