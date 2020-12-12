@@ -72,8 +72,9 @@ fprintf('Time bin size: %.5f s\n', dt);
 fprintf('Number of spikes: %d (mean rate = %.1f Hz)\n\n', n_spks, ...
         n_spks / n_obs * (1 / dt));
 
-% Plot first second of stimulus.
+% Plot stimulus values and spike times.
 figure
+% Plot stimulus values.
 subplot(2, 1, 1);
 stim_bins_1s = 1 : round(1 / dt);       % bins of stimulus to plot
 t_in_stim_bins_1s = stim_bins_1s * dt;  % time bins of stimulus
@@ -882,7 +883,9 @@ assert(round(g_g_l_m_ll, 5, 'significant') == ...
 % We can also compute a log-likelihood value estimate for the NP-GLM by 
 % using the Poisson log-likelihood function on the NP-GLM predicted values.
 % To avoid negative infinites in our computation, we will first replace 0
-% values predicted by the model
+% values predicted by the model with the min predicted value of the P-GLM.
+% (To remove 0s we could also pass the entire NP-GLM predicted output
+% through a function, like the softplus function).
 np_g_l_m_y_train_nonzero = np_g_l_m_y_train;
 np_g_l_m_y_train_nonzero(np_g_l_m_y_train_nonzero == 0) = ...
     min(p_g_l_m_y_train);
@@ -890,8 +893,9 @@ np_g_l_m_ll = y_train' * log(np_g_l_m_y_train_nonzero) ...
               - sum(np_g_l_m_y_train_nonzero) ...
               - sum(log(factorial(y_train)));
 
-% Lastly, compute log-likelihood for a "homogeneous-Poisson" model (HP-GLM)
-% that assumes a constant firing rate with the correct mean spike count.
+% Lastly, compute log-likelihood value for a "homogeneous-Poisson" model 
+% (HP-GLM) that assumes a constant firing rate with the correct mean spike
+% count.
 mean_rate_param = n_spks / n_obs;
 hp_g_l_m_ll = sum(y_train' * log(mean_rate_param)) ...
               - (mean_rate_param * n_obs) - sum(log(factorial(y_train)));

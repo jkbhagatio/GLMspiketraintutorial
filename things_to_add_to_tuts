@@ -1,6 +1,9 @@
 Tut1:
-	- why STA is biased estimator for G-GLM, and why WSTA is not
+	- why STA is biased estimator for G-GLM, and why WSTA is not?
 	- finish section 8: reviewing model performance via different measures
 	- advanced exercise: define custom: 1) model, 2) likelihood function for this model, 3) optimization algo to find best-fit params for likelihood function for model
-	- how does maximizing likelihood compare to minimizing error function
-	- why does model with greater likelihood for a given dataset not always have higher performance (r^2) for that same dataset?
+	- how does maximizing likelihood compare to minimizing error function? -> we minimize an error function when we deem maximizing likelihood too hard: what is a concrete example of this?
+	- add f-vals and p-vals
+
+Tut2:
+	- finish section 6: reviewing model performance via different measures

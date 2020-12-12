@@ -13,168 +13,384 @@
 % For detailed suggestions on how to interact with this tutorial, see
 % header material in tutorial1_PoissonGLM.m
 
-%% ====  1. Load the raw data ============
+%% 1. Load the raw data
 
-% ------------------------------------------------------------------------
-% Be sure to unzip the data file data_RGCs.zip
-% (http://pillowlab.princeton.edu/data/data_RGCs.zip) and place it in 
-% this directory before running the tutorial.  
-% ------------------------------------------------------------------------
-% (Data from Uzzell & Chichilnisky 2004):
-datdir = 'data_RGCs/';  % directory where stimulus lives
-load([datdir, 'Stim']);    % stimulus (temporal binary white noise)
-load([datdir,'stimtimes']); % stim frame times in seconds (if desired)
-load([datdir, 'SpTimes']); % load spike times (in units of stim frames)
-ncells = length(SpTimes);  % number of neurons (4 for this dataset).
-% Neurons #1-2 are OFF, #3-4 are ON.
-% -------------------------------------------------------------------------
+% Load data.
+data_dir = 'data_RGCs/';      % data directory
+load([data_dir, 'Stim']);     % stimulus values (binary white noise)
+load([data_dir,'stimtimes']); % stim frame times in seconds (if desired)
+load([data_dir, 'SpTimes']);  % load spike times (in units of stim frames)
 
-% Compute some basic statistics on the stimulus
-dtStim = (stimtimes(2)-stimtimes(1)); % time bin size for stimulus (s)
-nT = size(Stim,1); % number of time bins in stimulus
+% Rename variables.
+stim = Stim;
+stim_ts = stimtimes;
+spk_ts = SpTimes;
+clear Stim stimtimes SpTimes
 
-% See tutorial 1 for some code to visualize the raw data!
+% Get basic info on cells and stim.
+n_cells = length(spk_ts);           % number of cells
+cell_num = 3;                          % cell to load
+spk_ts_s_c = spk_ts{cell_num};        % spike timestamps for selected cell
+n_spks = length(spk_ts_s_c);          % number of spikes
+dt = (stim_ts(2) - stim_ts(1));  % time bin size for stimulus (s)
+n_obs = size(stim, 1);                 % number of time bins (observations)
 
-%% ==== 2. Bin the spike trains =========================
-%
-% For now we will assume we want to use the same time bin size as the time
-% bins used for the stimulus. Later, though, we'll wish to vary this.
-tbins = (.5:nT)*dtStim; % time bin centers for spike train binnning
-sps = zeros(nT,ncells);
-for jj = 1:ncells
-    sps(:,jj) = hist(SpTimes{jj},tbins)';  % binned spike train
-end
+% Print out some basic info.
+fprintf('--------------------------\n');
+fprintf('Loaded RGC data: cell %d\n', cell_num);
+fprintf('Number of stim frames: %d (%.1f minutes)\n', n_obs, ...
+        n_obs * (dt / 60));
+fprintf('Time bin size: %.5f s\n', dt);
+fprintf('Number of spikes: %d (mean rate = %.1f Hz)\n\n', n_spks, ...
+        n_spks / n_obs * (1 / dt));
 
-% Let's just visualize the spike-train auto and cross-correlations
-% (Comment out this part if desired!)
+% Plot stimulus values and spike times.
+figure
+% Plot stimulus values.
+subplot(2, 1, 1);
+stim_bins_1s = 1 : round(1 / dt);       % bins of stimulus to plot
+t_in_stim_bins_1s = stim_bins_1s * dt;  % time bins of stimulus
+plot(t_in_stim_bins_1s, stim(stim_bins_1s), 'linewidth', 2); 
+axis tight;
+title('raw stimulus (full field flicker)');
+ylabel('stim intensity');
+% Plot spike times.
+subplot(2, 1, 2);
+% Get the spike times that happen within `bins`.
+spk_ts_in_1s = ...
+    spk_ts_s_c((spk_ts_s_c >= t_in_stim_bins_1s(1)) ...
+                     & (spk_ts_s_c < t_in_stim_bins_1s(end)));
+plot(spk_ts_in_1s, 1, 'ko', 'markerfacecolor', 'k');
+axis tight
+set(gca, 'xlim', t_in_stim_bins_1s([1 end]));
+title('spike times');
+xlabel('time (s)');
+
+% Let's visualize the spike-train auto and cross-correlations at 0.5s
+% around 0.
 clf;
-nlags = 30; % number of time-lags to use 
-for ii = 1:ncells
-    for jj = ii:ncells
-        % Compute cross-correlation of neuron i with neuron j
-        xc = xcorr(sps(:,ii),sps(:,jj),nlags,'unbiased');
+n_lags = ceil(0.5 / dt);
+for i_cell = 1 : n_cells
+    for j_cell = i_cell : n_cells
+        % Compute cross-correlation of neuron i with neuron j.
+        xc = xcorr(spk_ts{i_cell}, spk_ts{j_cell}, n_lags);
 
-        % remove center-bin correlation for auto-correlations (for ease of viz)
-        if ii==jj, xc(nlags+1) = 0;
+        % remove center-bin correlation value for auto-correlations (for
+        % viz purposes)
+        if i_cell == j_cell, xc(n_lags + 1) = 0;
         end
         
         % Make plot
-        subplot(ncells,ncells,(ii-1)*ncells+jj);
-        plot((-nlags:nlags)*dtStim,xc,'.-','markersize',20); 
-        axis tight; drawnow;
-        title(sprintf('cells (%d,%d)',ii,jj)); axis tight;
+        subplot(n_cells, n_cells, ((i_cell-1) * n_cells) + j_cell);
+        plot((-n_lags : n_lags) * dt, xc, '.-', 'markersize', 20); 
+        axis tight;
+        title(sprintf('cells (%d,%d)', i_cell, j_cell));
     end
 end
 xlabel('time shift (s)');
 
-%% ==== 3. Build design matrix: single-neuron GLM with spike-history =========
+%% 2. Create the response variables: bin the spike trains
 
-% Pick the cell to focus on (for now).
-cellnum = 3;  % 1-2: OFF, 3-4: ON
+% For now, we will assume we want to use the same bins on the spike train
+% as the bins used for the stimulus. Later, though, we'll wish to vary 
+% this. This binned spike activity vector (where we have a spike count for
+% each observation) will be what we are trying to predict from our GLMs.
 
-% Set the number of time bins of stimulus to use for predicting spikes
-ntfilt = 25;  % Try varying this, to see how performance changes!
-% Set number of time bins of auto-regressive spike-history to use
-nthist = 20;
+% Create time bins for spike train binning.
+spk_ts_bins = [0, ((1 : n_obs) * dt)];
+% Bin the spike trains.
+spk_ts_hist = zeros(n_obs, n_cells);
+for i_cell = 1 : n_cells
+    spk_ts_hist(:, i_cell) = histcounts(spk_ts{i_cell}, spk_ts_bins);
+end
+% Rename response variable as `y`.
+y = spk_ts_hist;
 
-% Build stimulus design matrix (using 'hankel');
-paddedStim = [zeros(ntfilt-1,1); Stim]; % pad early bins of stimulus with zero
-Xstim = hankel(paddedStim(1:end-ntfilt+1), Stim(end-ntfilt+1:end));
+%% 3. Create the predictor variables: Build design matrix:
 
-% Build spike-history design matrix
-paddedSps = [zeros(nthist,1); sps(1:end-1,cellnum)];
+% Set the number of past bins of the stimulus to use for predicting spikes
+% (Try varying this, to see how performance changes!)
+n_p_x = 25;  % number of parameters in `x` design matrix (bins in past)  
+% Set number of time bins of auto-regressive spike history to use.
+n_p_a = 24;  % number of parameters for auto-regressive spike history.
+
+% Build stimulus design matrix, `x` (using `hankel`).
+% Pad early bins of stimulus with zero.
+padded_stim = [zeros(n_p_x-1,1); stim];
+x_stim = hankel(padded_stim(1 : (end - n_p_x + 1)), ...
+                padded_stim((end - n_p_x + 1) : end));
+
+% Build spike-history design matrix.
+padded_spk_ts = [zeros(n_p_a, 1); y(1 : end - 1, cell_num)];
 % SUPER important: note that this doesn't include the spike count for the
-% bin we're predicting? The spike train is shifted by one bin (back in
-% time) relative to the stimulus design matrix
-Xsp = hankel(paddedSps(1:end-nthist+1), paddedSps(end-nthist+1:end));
+% bin we're predicting! The spike train is shifted by one bin (back in
+% time) relative to the stimulus design matrix.
+x_spk_h = hankel(padded_spk_ts(1 : (end - n_p_a + 1)), ...
+                 padded_spk_ts((end - n_p_a + 1) : end));
 
 % Combine these into a single design matrix
-Xdsgn = [Xstim,Xsp];
+x = [x_stim, x_spk_h];
 
-% Let's visualize the design matrix just to see what it looks like
-subplot(1,10,1:9); 
-imagesc(1:(ntfilt+nthist), 1:50, Xdsgn(1:50,:));
-xlabel('regressor');
+% Let's visualize a small part of the design matrix just to see it.
+clf
+n_obs_disp = 100;
+subplot(1, 10, 1:9);
+imagesc(1 : (n_p_x + n_p_a), 1 : n_obs_disp, x(1 : n_obs_disp, :));
+colormap(gray)
+h_cb = colorbar;
+h_cb.Location = 'southoutside';
+set(gca, 'xticklabel', []);
 ylabel('time bin of response');
 title('design matrix (including stim and spike history)');
-subplot(1,10,10); 
-imagesc(sps(1:50,cellnum));
-set(gca,'yticklabel', []); 
+subplot(1, 10, 10); 
+imagesc(y(1 : n_obs_disp, cell_num));
+h_cb = colorbar;
+h_cb.Location = 'southoutside';
+set(gca, 'yticklabel', []);
+set(gca, 'xticklabel', []);
 title('spike count');
 
 % The left part of the design matrix has the stimulus values, the right
-% part has the spike-history values.  The image on the right is the spike
-% count to be predicted.  Note that the spike-history portion of the design
-% matrix had better be shifted so that we aren't allowed to use the spike
-% count on this time bin to predict itself!
+% part has the spike-history values. The image on the right is the spike
+% count to be predicted (there is a count of one in the 7th bin). Note that
+% the spike-history portion of the design matrix is shifted down one 
+% relative to the spike count so that we aren't allowed to use the spike
+% count on this time bin to predict itself! This can be confirmed below:
 
-%% === 4. fit single-neuron GLM with spike-history ==================
+obs_first_spk_cell = find(y(:, cell_num), 1, 'first');
+assert((x(obs_first_spk_cell, end) == 0) ...
+       && x(obs_first_spk_cell + 1, end) == 1);
 
-% First fit GLM with no spike-history
-fprintf('Now fitting basic Poisson GLM...\n');
-pGLMwts0 = glmfit(Xstim,sps(:,cellnum),'poisson'); % assumes 'log' link and 'constant'='on'.
-pGLMconst0 = pGLMwts0(1);
-pGLMfilt0 = pGLMwts0(2:end);
+% Divide the complete dataset into a 60:20:20 training:validation:test 
+% ratio, and pick random observations for each subset based on this ratio.
+obs_all = [1 : n_obs]';
+n_obs_train = ceil(.6 * n_obs);
+n_obs_validate = (n_obs - n_obs_train) / 2;
+n_obs_test = n_obs_validate;
+% Throw error if sum of n_obs in subsets doesn't add up to `n_obs`.
+assert((n_obs_train + n_obs_validate + n_obs_test) == n_obs, ...
+       ['The number of total observations in the subsets do not match the '...
+        'number of total observations in the full dataset.']);
+% Set random number generator so we get predictable results.
+rng(1);
+% Random 60% of data.
+obs_train = datasample(obs_all, n_obs_train, 'replace', false);
+% Random 20% of the data that has not already been included in `obs_train`.
+obs_validate = datasample(setdiff(obs_all, obs_train), n_obs_validate, ...
+                          'replace', false);
+% Remaining 20% of the data.
+obs_test = setdiff(obs_all, [obs_train; obs_validate]);
+% Throw error if length of subset of obs doesn't match the n_obs of that
+% subset, or if the combined set of unique obs in the subsets doesn't equal
+% `obs_all`.
+assert(length(obs_train) == n_obs_train ...
+       && length(obs_validate) == n_obs_validate ...
+       && length(obs_test) == n_obs_test, ...
+       'The observations were not properly divided into subsets');
+assert(all(sort(unique([obs_train; obs_validate; obs_test])) == obs_all), ...
+       'The observations were not properly divided into subsets');
+% Set subsets.
+x_train = x(obs_train, :);
+x_validate = x(obs_validate, :);
+x_test = x(obs_test, :);
+y_train = y(obs_train, :);
+y_validate = y(obs_validate, :);
+y_test = y(obs_test, :);
 
-% Then fit GLM with spike history (now use Xdsgn design matrix instead of Xstim)
-fprintf('Now fitting Poisson GLM with spike-history...\n');
-pGLMwts1 = glmfit(Xdsgn,sps(:,cellnum),'poisson');
-pGLMconst1 = pGLMwts1(1);
-pGLMfilt1 = pGLMwts1(2:1+ntfilt);
-pGLMhistfilt1 = pGLMwts1(ntfilt+2:end);
+%% 4. Fit & predict with a single-neuron P-GLM with spike history
 
-%%  Make plots comparing filters
-ttk = (-ntfilt+1:0)*dtStim; % time bins for stim filter
-tth = (-nthist:-1)*dtStim; % time bins for spike-history filter
+% First fit P-GLM with no spike history.
+p_g_l_m = fitglm(x_train(:, 1 : 25), y_train(:, cell_num), ...
+                 'distribution', 'poisson', 'link', 'log', ...
+                 'intercept', true);
+% Get model parameters and predcitions on training and validation sets.             
+p_g_l_m_p_train = p_g_l_m.Coefficients.Estimate;
+p_g_l_m_y_train = p_g_l_m.Fitted.Response;
+p_g_l_m_y_validate = exp([ones(n_obs_validate, 1), x_validate(:, 1 : 25)] ...
+                         * p_g_l_m_p_train);
 
-clf; subplot(221); % Plot stim filters
-h = plot(ttk,ttk*0,'k--',ttk,pGLMfilt0, 'o-',ttk,pGLMfilt1,'o-','linewidth',2);
-legend(h(2:3), 'GLM', 'sphist-GLM','location','northwest');axis tight;
-title('stimulus filters'); ylabel('weight');
-xlabel('time before spike (s)');
+% Then fit P-GLM with spike history ('autoregressive-Poisson GLM')
+ap_g_l_m = fitglm(x_train, y_train(:, cell_num), 'distribution', 'poisson',...
+                  'link', 'log', 'intercept', true);
+ap_g_l_m_p_train = ap_g_l_m.Coefficients.Estimate;
+ap_g_l_m_y_train = ap_g_l_m.Fitted.Response;
+ap_g_l_m_y_validate = exp([ones(n_obs_validate, 1), x_validate] ...
+                          * ap_g_l_m_p_train);
 
-subplot(222); % Plot spike history filter
-colr = get(h(3),'color');
-h = plot(tth,tth*0,'k--',tth,pGLMhistfilt1, 'o-');
-set(h(2), 'color', colr, 'linewidth', 2); 
-title('spike history filter'); 
-xlabel('time before spike (s)');
-ylabel('weight'); axis tight;
+% <s Visualize parameters (filters)
 
-%% Plot predicted rate out of the two models
+% Set time bins for plotting
+t_bins_stim = ((-n_p_x + 1) : 0) * dt;  % time bins for stim filt
+t_bins_spk_h = (-n_p_a : -1) * dt;      % time bins for spike history filt
 
-% Compute predicted spike rate on training data
-ratepred0 = exp(pGLMconst0 + Xstim*pGLMfilt0);
-ratepred1 = exp(pGLMconst1 + Xdsgn*pGLMwts1(2:end));
+clf
+% Plot stim filters
+subplot(2, 1, 1);
+hold on
+plot(t_bins_stim, p_g_l_m_p_train(2 : end), 'o-');
+h = plot(t_bins_stim, ap_g_l_m_p_train(2 : 26), 'o-');
+axis tight
+legend('P-GLM', 'AP-GLM', 'location', 'northwest');
+title('stimulus filters'); 
 
-% Make plot
-iiplot = 1:60; ttplot = iiplot*dtStim;
-subplot(212);
-stem(ttplot,sps(iiplot,cellnum), 'k'); hold on;
-plot(ttplot,ratepred0(iiplot),ttplot,ratepred1(iiplot), 'linewidth', 2);
-hold off;  axis tight;
-legend('spikes', 'GLM', 'hist-GLM');
+% Plot spike history filters
+subplot(2, 1, 2);
+c = h.Color;
+h = plot(t_bins_spk_h, ap_g_l_m_p_train(27 : end), 'o-');
+axis tight
+h.Color = c;
+title('spike history filter');
+xlabel('time lag (s)');
+ylabel('weight');
+
+% Here we see that the stimulus filters for both models share roughly the
+% same biphasic shape, with the AP-GLM weights having slightly greater
+% magnitude. The spike history filter for the AP-GLM contains only negative
+% weights, which tells us that if a spike occurred in the time lag we are
+% looking at, one is less likely to occur for the exact observation we are
+% looking at. This is particularly true close to the observation (e.g. time
+% lags less than -0,02 s), which could be indicative of the cell's
+% refractory period.
+
+% /s>
+
+% <s Visualize and quantify fits to training and validation data
+
+% <ss Visualize fits to first second of training and validation data.
+
+clf
+% Plot model fits over first second of training data.
+subplot(2, 1, 1)
+hold on
+stem(t_in_stim_bins_1s, y_train(stim_bins_1s, 3), 'linewidth', 1.5);
+plot(t_in_stim_bins_1s, p_g_l_m_y_train(stim_bins_1s), ...
+     'linewidth', 1.5);
+plot(t_in_stim_bins_1s, ap_g_l_m_y_train(stim_bins_1s), ...
+     'linewidth', 1.5);
+axis tight
+title('model fits to 1s of training data');
+% Plot model fits over first second of validation data.
+subplot(2, 1, 2)
+hold on
+stem(t_in_stim_bins_1s, y_validate(stim_bins_1s, 3), 'linewidth', 1.5);
+plot(t_in_stim_bins_1s, p_g_l_m_y_validate(stim_bins_1s), ...
+     'linewidth', 1.5);
+plot(t_in_stim_bins_1s, ap_g_l_m_y_validate(stim_bins_1s), ...
+     'linewidth', 1.5);
+axis tight
+title('model fits to 1s of validation data');
 xlabel('time (s)');
-title('spikes and rate predictions');
-ylabel('spike count / bin');
+ylabel('spike count');
+legend('empirical spike count', 'P-GLM', 'AP-GLM', ...
+       'location', 'northwest');
+% /ss>
 
-%% === 5. fit coupled GLM for multiple-neuron responses ==================
+% <ss Report training performance.
+
+% <sss Compute r-squared values for the models.
+
+% Compute residuals for training and validation sets.
+res_train = mean((y_train(:, 3) - mean(y_train(:, 3))) .^ 2);
+res_validate = mean((y_validate(:, 3) - mean(y_validate(:, 3))) .^ 2);
+
+% Compute mean-squared error for P-GLM on training set.
+p_g_l_m_m_s_e_train = mean((y_train(:, 3) - p_g_l_m_y_train) .^ 2);
+% Compute r-squared for P-GLM on training set.
+p_g_l_m_r2_train = 1 - (p_g_l_m_m_s_e_train / res_train);
+fmt_r2 = ' of the variance in the data is explained by the model.\n';
+fprintf(['Training perf (R^2): P-GLM: %.3f', fmt_r2], p_g_l_m_r2_train);
+% The r-squared value can also be found directly within the model object.
+assert(round(p_g_l_m.Rsquared.Ordinary, 5, 'significant') ...
+       == round(p_g_l_m_r2_train, 5, 'significant'));
+
+% Compute mean-squared error for P-GLM on validation set.
+p_g_l_m_m_s_e_validate = ...
+    mean((y_validate(:, 3) - p_g_l_m_y_validate) .^ 2);
+% Compute r-squared for P-GLM on validation set.
+p_g_l_m_r2_validate = 1 - (p_g_l_m_m_s_e_validate / res_validate);
+fprintf(['Validation perf (R^2): P-GLM: %.3f', fmt_r2], ...
+        p_g_l_m_r2_validate);
+
+% Get r-squared for AP-GLM on training set.
+fprintf(['Training perf (R^2): AP-GLM: %.3f', fmt_r2], ...
+        ap_g_l_m.Rsquared.Ordinary);
+
+% Compute mean-squared error for AP-GLM on validation set.
+ap_g_l_m_m_s_e_validate = ...
+    mean((y_validate(:, 3) - ap_g_l_m_y_validate) .^ 2);
+% Compute r-squared for AP-GLM on validation set.
+ap_g_l_m_r2_validate = 1 - (ap_g_l_m_m_s_e_validate / res_validate);
+fprintf(['Validation perf (R^2): AP-GLM: %.3f', fmt_r2], ...
+    ap_g_l_m_r2_validate);
+     
+% /sss>
+
+% <sss Compute p-values for the models.
+
+% Compute the f-value for P-GLM on training set.
+p_g_l_m_fval_train = ((res_train - p_g_l_m_m_s_e_train) / (n_p_x - 1)) ...
+                     / (p_g_l_m_m_s_e_train / (n_obs - n_p_x));
+% Compute the p-value from the f-distribution for P-GLM on training set.
+p_g_l_m_pval_train = ...
+    1 - fcdf(p_g_l_m_fval_train, (n_p_x - 1), (n_obs - n_p_x));
+fmt_pval = ...
+    ['If there is no relationship between our model''s parameters and '...
+     'the spike count, then the probability that we would get an R^2 '....
+     'value at least as rare as '];
+fprintf([fmt_pval, '%.5f for the P-GLM fit on the training data is '...
+         '%.5f\n'], p_g_l_m_r2_train, p_g_l_m_pval_train);
+% The p-value can also be found directly within the model object.
+assert(round(p_g_l_m.devianceTest.pValue(end), 5, 'significant') ...
+       == round(p_g_l_m_pval_train, 5, 'significant'));
+
+% Compute the f-value for P-GLM on validation set.
+p_g_l_m_fval_validate = ...
+    ((res_validate - p_g_l_m_m_s_e_validate) / (n_p_x - 1)) ...
+     / (p_g_l_m_m_s_e_validate / (n_obs - n_p_x));
+% Compute the p-value from the f-distribution for P-GLM on validation set.
+p_g_l_m_pval_validate = ...
+    1 - fcdf(p_g_l_m_fval_validate, (n_p_x - 1), (n_obs - n_p_x));
+fprintf([fmt_pval, '%.5f for the P-GLM fit on the validation data is '...
+         '%.5f\n'], p_g_l_m_r2_validate, p_g_l_m_pval_validate);
+
+% Get the p-value for AP-GLM on training set.
+fprintf([fmt_pval, '%.5f for the AP-GLM fit on the training data is '...
+         '%.5f\n'], ap_g_l_m_r2_train, ap_g_l_m.devianceTest.pValue(end));
+
+% Compute the f-value for AP-GLM on validation set.
+ap_g_l_m_fval_validate = ...
+    ((res_validate - ap_g_l_m_m_s_e_validate) / ((n_p_x + n_p_a) - 1)) ...
+     / (p_g_l_m_m_s_e_train / (n_obs - (n_p_x + n_p_a)));
+% Compute the p-value from the f-distribution for AP-GLM on training set.
+ap_g_l_m_pval_validate = ...
+    1 - fcdf(ap_g_l_m_fval_validate, ((n_p_x  + n_p_a) - 1), ...
+             (n_obs - (n_p_x + n_p_a)));
+fprintf([fmt_pval, '%.5f for the AP-GLM fit on the validation data is '...
+         '%.5f\n'], ap_g_l_m_r2_validate, ap_g_l_m_pval_validate);     
+% /sss>
+% /ss>
+% /s>
+
+% Here we see that the AP-GLM outperforms the P-GLM ... 
+
+
+%% 5. Fit & predict with a coupled-neuron P-GLM for multi-neuron response
 
 % First step: build design matrix containing spike history for all neurons
 
-Xspall = zeros(nT,nthist,ncells); % allocate space
+Xspall = zeros(n_obs,n_p_a,n_cells); % allocate space
 % Loop over neurons to build design matrix, exactly as above
-for jj = 1:ncells
-    paddedSps = [zeros(nthist,1); sps(1:end-1,jj)];
-    Xspall(:,:,jj) = hankel(paddedSps(1:end-nthist+1),paddedSps(end-nthist+1:end));
+for j_cell = 1:n_cells
+    padded_spk_ts = [zeros(n_p_a,1); spk_ts(1:end-1,j_cell)];
+    Xspall(:,:,j_cell) = hankel(padded_spk_ts(1:end-n_p_a+1),padded_spk_ts(end-n_p_a+1:end));
 end
 
 % Reshape it to be a single matrix
-Xspall = reshape(Xspall,nT,[]);
+Xspall = reshape(Xspall,n_obs,[]);
 Xdsgn2 = [Xstim, Xspall]; % full design matrix (with all 4 neuron spike hist)
 
 clf; % Let's visualize 50 time bins of full design matrix
-imagesc(1:1:(ntfilt+nthist*ncells), 1:50, Xdsgn2(1:50,:));
+imagesc(1:1:(n_p_x+n_p_a*n_cells), 1:50, Xdsgn2(1:50,:));
 title('design matrix (stim and 4 neurons spike history)');
 xlabel('regressor');
 ylabel('time bin of response');
@@ -183,11 +399,11 @@ ylabel('time bin of response');
 
 fprintf('Now fitting Poisson GLM with spike-history and coupling...\n');
 
-pGLMwts2 = glmfit(Xdsgn2,sps(:,cellnum),'poisson');
+pGLMwts2 = glmfit(Xdsgn2,spk_ts(:,cellnum),'poisson');
 pGLMconst2 = pGLMwts2(1);
-pGLMfilt2 = pGLMwts2(2:1+ntfilt);
-pGLMhistfilts2 = pGLMwts2(ntfilt+2:end);
-pGLMhistfilts2 = reshape(pGLMhistfilts2,nthist,ncells);
+pGLMfilt2 = pGLMwts2(2:1+n_p_x);
+pGLMhistfilts2 = pGLMwts2(n_p_x+2:end);
+pGLMhistfilts2 = reshape(pGLMhistfilts2,n_p_a,n_cells);
 
 % So far all we've done is fit incoming stimulus and coupling filters for
 % one neuron.  To fit a full population model, redo the above for each cell
@@ -197,15 +413,15 @@ pGLMhistfilts2 = reshape(pGLMhistfilts2,nthist,ncells);
 %% Plot the fitted filters and rate prediction
 
 clf; subplot(221); % Plot stim filters
-h = plot(ttk,ttk*0,'k--',ttk,pGLMfilt0, 'o-',ttk,pGLMfilt1,...
-    ttk,pGLMfilt2,'o-','linewidth',2); axis tight; 
+h = plot(t_bins_stim,t_bins_stim*0,'k--',t_bins_stim,pGLMfilt0, 'o-',t_bins_stim,pGLMfilt1,...
+    t_bins_stim,pGLMfilt2,'o-','linewidth',2); axis tight; 
 legend(h(2:4), 'GLM', 'sphist-GLM','coupled-GLM', 'location','northwest');
 title(['stimulus filter: cell ' num2str(cellnum)]); ylabel('weight'); 
 xlabel('time before spike (s)');
 
 subplot(222); % Plot spike history filter
-colr = get(h(3),'color');
-h = plot(tth,tth*0,'k--',tth,pGLMhistfilts2,'linewidth',2);
+c = get(h(3),'color');
+h = plot(t_bins_spk_h,t_bins_spk_h*0,'k--',t_bins_spk_h,pGLMhistfilts2,'linewidth',2);
 legend(h(2:end),'from 1', 'from 2', 'from 3', 'from 4', 'location', 'northwest');
 title(['coupling filters: into cell ' num2str(cellnum)]); axis tight;
 xlabel('time before spike (s)');
@@ -215,9 +431,9 @@ ylabel('weight');
 ratepred2 = exp(pGLMconst2 + Xdsgn2*pGLMwts2(2:end));
 
 % Make plot
-iiplot = 1:60; ttplot = iiplot*dtStim;
+iiplot = 1:60; ttplot = iiplot*dt;
 subplot(212);
-stem(ttplot,sps(iiplot,cellnum), 'k'); hold on;
+stem(ttplot,spk_ts(iiplot,cellnum), 'k'); hold on;
 plot(ttplot,ratepred0(iiplot),ttplot,ratepred1(iiplot),...
     ttplot,ratepred2(iiplot), 'linewidth', 2);
 hold off;  axis tight;
@@ -231,14 +447,14 @@ ylabel('spike count / bin');
 % Let's compute loglikelihood (single-spike information) and AIC to see how
 % much we gain by adding each of these filter types in turn:
 
-LL_stimGLM = sps(:,cellnum)'*log(ratepred0) - sum(ratepred0);
-LL_histGLM = sps(:,cellnum)'*log(ratepred1) - sum(ratepred1);
-LL_coupledGLM = sps(:,cellnum)'*log(ratepred2) - sum(ratepred2);
+LL_stimGLM = spk_ts(:,cellnum)'*log(ratepred0) - sum(ratepred0);
+LL_histGLM = spk_ts(:,cellnum)'*log(ratepred1) - sum(ratepred1);
+LL_coupledGLM = spk_ts(:,cellnum)'*log(ratepred2) - sum(ratepred2);
 
 % log-likelihood for homogeneous Poisson model
-nsp = sum(sps(:,cellnum));
-ratepred_const = nsp/nT;  % mean number of spikes / bin
-LL0 = nsp*log(ratepred_const) - nT*sum(ratepred_const);
+nsp = sum(spk_ts(:,cellnum));
+ratepred_const = nsp/n_obs;  % mean number of spikes / bin
+LL0 = nsp*log(ratepred_const) - n_obs*sum(ratepred_const);
 
 % Report single-spike information (bits / sp)
 SSinfo_stimGLM = (LL_stimGLM - LL0)/nsp/log(2);
@@ -251,9 +467,9 @@ fprintf('hist-GLM: %.2f bits/sp\n',SSinfo_histGLM);
 fprintf('coupled-GLM: %.2f bits/sp\n',SSinfo_coupledGLM);
 
 % Compute AIC
-AIC0 = -2*LL_stimGLM + 2*(1+ntfilt); 
-AIC1 = -2*LL_histGLM + 2*(1+ntfilt+nthist);
-AIC2 = -2*LL_coupledGLM + 2*(1+ntfilt+ncells*nthist);
+AIC0 = -2*LL_stimGLM + 2*(1+n_p_x); 
+AIC1 = -2*LL_histGLM + 2*(1+n_p_x+n_p_a);
+AIC2 = -2*LL_coupledGLM + 2*(1+n_p_x+n_cells*n_p_a);
 AICmin = min([AIC0,AIC1,AIC2]); % the minimum of these
 
 fprintf('\n AIC comparison (smaller is better):\n ---------------------- \n');
