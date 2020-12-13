@@ -139,6 +139,7 @@ imagesc(1 : (n_p_x + n_p_a), 1 : n_obs_disp, x(1 : n_obs_disp, :));
 colormap(gray)
 h_cb = colorbar;
 h_cb.Location = 'southoutside';
+h_cb.Label.String = 'stim intensity value or spike count';
 set(gca, 'xticklabel', []);
 ylabel('time bin of response');
 title('design matrix (including stim and spike history)');
@@ -199,6 +200,9 @@ y_test = y(obs_test, :);
 
 %% 4. Fit & predict with a single-neuron P-GLM with spike history
 
+% <s Fit model on training data, and then predict output for training and
+% validation data.
+
 % First fit P-GLM with no spike history.
 p_g_l_m = fitglm(x_train(:, 1 : 25), y_train(:, cell_num), ...
                  'distribution', 'poisson', 'link', 'log', ...
@@ -216,6 +220,7 @@ ap_g_l_m_p_train = ap_g_l_m.Coefficients.Estimate;
 ap_g_l_m_y_train = ap_g_l_m.Fitted.Response;
 ap_g_l_m_y_validate = exp([ones(n_obs_validate, 1), x_validate] ...
                           * ap_g_l_m_p_train);
+% /s>                      
 
 % <s Visualize parameters (filters)
 
@@ -289,7 +294,7 @@ legend('empirical spike count', 'P-GLM', 'AP-GLM', ...
 
 % <sss Compute r-squared values for the models.
 
-% Compute residuals for training and validation sets.
+% Compute residuals around mean- for training and validation sets.
 res_train = mean((y_train(:, 3) - mean(y_train(:, 3))) .^ 2);
 res_validate = mean((y_validate(:, 3) - mean(y_validate(:, 3))) .^ 2);
 
@@ -312,8 +317,9 @@ fprintf(['Validation perf (R^2): P-GLM: %.3f', fmt_r2], ...
         p_g_l_m_r2_validate);
 
 % Get r-squared for AP-GLM on training set.
+ap_g_l_m_r2_train = ap_g_l_m.Rsquared.Ordinary;
 fprintf(['Training perf (R^2): AP-GLM: %.3f', fmt_r2], ...
-        ap_g_l_m.Rsquared.Ordinary);
+        ap_g_l_m_r2_train);
 
 % Compute mean-squared error for AP-GLM on validation set.
 ap_g_l_m_m_s_e_validate = ...
@@ -337,7 +343,7 @@ fmt_pval = ...
     ['If there is no relationship between our model''s parameters and '...
      'the spike count, then the probability that we would get an R^2 '....
      'value at least as rare as '];
-fprintf([fmt_pval, '%.5f for the P-GLM fit on the training data is '...
+fprintf([fmt_pval, '%.3f for the P-GLM fit on the training data is '...
          '%.5f\n'], p_g_l_m_r2_train, p_g_l_m_pval_train);
 % The p-value can also be found directly within the model object.
 assert(round(p_g_l_m.devianceTest.pValue(end), 5, 'significant') ...
@@ -350,12 +356,13 @@ p_g_l_m_fval_validate = ...
 % Compute the p-value from the f-distribution for P-GLM on validation set.
 p_g_l_m_pval_validate = ...
     1 - fcdf(p_g_l_m_fval_validate, (n_p_x - 1), (n_obs - n_p_x));
-fprintf([fmt_pval, '%.5f for the P-GLM fit on the validation data is '...
+fprintf([fmt_pval, '%.3f for the P-GLM fit on the validation data is '...
          '%.5f\n'], p_g_l_m_r2_validate, p_g_l_m_pval_validate);
 
 % Get the p-value for AP-GLM on training set.
-fprintf([fmt_pval, '%.5f for the AP-GLM fit on the training data is '...
-         '%.5f\n'], ap_g_l_m_r2_train, ap_g_l_m.devianceTest.pValue(end));
+ap_g_l_m_pval_train =  ap_g_l_m.devianceTest.pValue(end);
+fprintf([fmt_pval, '%.3f for the AP-GLM fit on the training data is '...
+         '%.5f\n'], ap_g_l_m_r2_train, ap_g_l_m_pval_train);
 
 % Compute the f-value for AP-GLM on validation set.
 ap_g_l_m_fval_validate = ...
@@ -365,82 +372,226 @@ ap_g_l_m_fval_validate = ...
 ap_g_l_m_pval_validate = ...
     1 - fcdf(ap_g_l_m_fval_validate, ((n_p_x  + n_p_a) - 1), ...
              (n_obs - (n_p_x + n_p_a)));
-fprintf([fmt_pval, '%.5f for the AP-GLM fit on the validation data is '...
+fprintf([fmt_pval, '%.3f for the AP-GLM fit on the validation data is '...
          '%.5f\n'], ap_g_l_m_r2_validate, ap_g_l_m_pval_validate);     
+
+% Here we see visually and quantitatively that the AP-GLM slightly 
+% outperforms the P-GLM.
+     
 % /sss>
 % /ss>
 % /s>
 
-% Here we see that the AP-GLM outperforms the P-GLM ... 
 
 
-%% 5. Fit & predict with a coupled-neuron P-GLM for multi-neuron response
+%% 5. Fit & predict with a coupled-neuron P-GLM for multi-neuron responses
 
-% First step: build design matrix containing spike history for all neurons
+% <s Build design matrix containing spike history for all neurons
 
-Xspall = zeros(n_obs,n_p_a,n_cells); % allocate space
-% Loop over neurons to build design matrix, exactly as above
-for j_cell = 1:n_cells
-    padded_spk_ts = [zeros(n_p_a,1); spk_ts(1:end-1,j_cell)];
-    Xspall(:,:,j_cell) = hankel(padded_spk_ts(1:end-n_p_a+1),padded_spk_ts(end-n_p_a+1:end));
+% Create as `n_obs X (n_p_a *  n_cells)`.
+x_spk_h_all = zeros(n_obs, (n_p_a * n_cells)); 
+for i_cell = 1 : n_cells
+    padded_spk_ts = [zeros(n_p_a, 1); spk_ts_hist(1 : (end - 1), i_cell)];
+    x_spk_h_all(:, ((i_cell - 1) * n_p_a + 1) : (i_cell * n_p_a)) = ...
+        hankel(padded_spk_ts(1 : (end - n_p_a + 1)), ...
+               padded_spk_ts((end - n_p_a + 1) : end));
 end
+% Add stim filter params to get final design matrix.
+x_2 = [x_stim, x_spk_h_all];
+% Split into training, validation, and test sets.
+x_2_train = x_2(obs_train, :);
+x_2_validate = x_2(obs_validate, :);
+x_2_test = x_2(obs_test, :);
 
-% Reshape it to be a single matrix
-Xspall = reshape(Xspall,n_obs,[]);
-Xdsgn2 = [Xstim, Xspall]; % full design matrix (with all 4 neuron spike hist)
-
-clf; % Let's visualize 50 time bins of full design matrix
-imagesc(1:1:(n_p_x+n_p_a*n_cells), 1:50, Xdsgn2(1:50,:));
+% Visualize a small chunk of the design matrix.
+clf;
+n_obs_disp = 100;
+imagesc(1 : 1 : (n_p_x + (n_p_a * n_cells)), 1 : n_obs_disp, ...
+        x_2(1 : n_obs_disp , :));
+h_cb = colorbar;
+h_cb.Location = 'southoutside';
+h_cb.Label.String = 'Stim intensity or Spike count';
 title('design matrix (stim and 4 neurons spike history)');
 xlabel('regressor');
 ylabel('time bin of response');
+% /s>
 
-%% Fit the model (stim filter, sphist filter, coupling filters) for one neuron 
+% <s Fit the coupled-P-GLM for one neuron.
 
-fprintf('Now fitting Poisson GLM with spike-history and coupling...\n');
+% Fit coupled-P-GLM on training data and use fit to predict output on
+% training and validation data.
+cp_g_l_m = ...
+    fitglm(x_2_train, y_train(:, cell_num), 'distribution', 'poisson',...
+           'link', 'log', 'intercept', true);
+cp_g_l_m_p_train = cp_g_l_m.Coefficients.Estimate;
+cp_g_l_m_y_train = cp_g_l_m.Fitted.Response;
+cp_g_l_m_y_validate = exp([ones(n_obs_validate, 1), x_2_validate] ...
+                          * cp_g_l_m_p_train);
+% /s>                      
 
-pGLMwts2 = glmfit(Xdsgn2,spk_ts(:,cellnum),'poisson');
-pGLMconst2 = pGLMwts2(1);
-pGLMfilt2 = pGLMwts2(2:1+n_p_x);
-pGLMhistfilts2 = pGLMwts2(n_p_x+2:end);
-pGLMhistfilts2 = reshape(pGLMhistfilts2,n_p_a,n_cells);
+% <s Visualize parameters (filters)
 
-% So far all we've done is fit incoming stimulus and coupling filters for
-% one neuron.  To fit a full population model, redo the above for each cell
-% (i.e., to get incoming filters for 'cellnum' = 1, 2, 3, and 4 in turn).  
+% Set time bins for plotting
+t_bins_stim = ((-n_p_x + 1) : 0) * dt;  % time bins for stim filt
+t_bins_spk_h = (-n_p_a : -1) * dt;      % time bins for spike history filt
 
+clf
+% Plot stim filters
+subplot(2, 1, 1);
+hold on
+plot(t_bins_stim, p_g_l_m_p_train(2 : end), 'o-');
+plot(t_bins_stim, ap_g_l_m_p_train(2 : (n_p_x + 1)), 'o-');
+plot(t_bins_stim, cp_g_l_m_p_train(2 : (n_p_x + 1)), 'o-');
+axis tight
+legend('P-GLM', 'AP-GLM', 'CP-GLM', 'location', 'northwest');
+title('stimulus filters');
 
-%% Plot the fitted filters and rate prediction
-
-clf; subplot(221); % Plot stim filters
-h = plot(t_bins_stim,t_bins_stim*0,'k--',t_bins_stim,pGLMfilt0, 'o-',t_bins_stim,pGLMfilt1,...
-    t_bins_stim,pGLMfilt2,'o-','linewidth',2); axis tight; 
-legend(h(2:4), 'GLM', 'sphist-GLM','coupled-GLM', 'location','northwest');
-title(['stimulus filter: cell ' num2str(cellnum)]); ylabel('weight'); 
-xlabel('time before spike (s)');
-
-subplot(222); % Plot spike history filter
-c = get(h(3),'color');
-h = plot(t_bins_spk_h,t_bins_spk_h*0,'k--',t_bins_spk_h,pGLMhistfilts2,'linewidth',2);
-legend(h(2:end),'from 1', 'from 2', 'from 3', 'from 4', 'location', 'northwest');
-title(['coupling filters: into cell ' num2str(cellnum)]); axis tight;
-xlabel('time before spike (s)');
+% Plot spike history filters
+cell_spk_h_idxs = [(n_p_x + 2) : n_p_a : length(cp_g_l_m_p_train)];
+subplot(2, 1, 2);
+hold on
+for i_cell = 1 : n_cells
+    plot(t_bins_spk_h, ...
+        cp_g_l_m_p_train(cell_spk_h_idxs(i_cell) ...
+        : (cell_spk_h_idxs(i_cell) + n_p_a - 1)), 'o-');
+end
+axis tight
+title('spike history filters');
+xlabel('time lag (s)');
 ylabel('weight');
+legend('cell 1', 'cell 2', 'cell 3', 'cell 4');
 
-% Compute predicted spike rate on training data
-ratepred2 = exp(pGLMconst2 + Xdsgn2*pGLMwts2(2:end));
+% Here we see that the stimulus filter for the AP-GLM is very similar to
+% that of the P-GLM. When we look at the spike history filters, we see that
+% at time lags close to 0 the predicted output is strongly influenced by
+% itself (negatively) and by cell 1 (positively), slightly influenced by 
+% cell 2, and barely influenced by cell 4.
+% /s>
 
-% Make plot
-iiplot = 1:60; ttplot = iiplot*dt;
-subplot(212);
-stem(ttplot,spk_ts(iiplot,cellnum), 'k'); hold on;
-plot(ttplot,ratepred0(iiplot),ttplot,ratepred1(iiplot),...
-    ttplot,ratepred2(iiplot), 'linewidth', 2);
-hold off;  axis tight;
-legend('spikes', 'GLM', 'sphist-GLM', 'coupled-GLM', 'location', 'northwest');
+% <s Visualize and quantify fits to training and validation data.
+
+% <ss Visualize fits to first second of training and validation data.
+
+clf
+% Plot model fits over first second of training data.
+subplot(2, 1, 1)
+hold on
+stem(t_in_stim_bins_1s, y_train(stim_bins_1s, 3), 'linewidth', 1.5);
+plot(t_in_stim_bins_1s, p_g_l_m_y_train(stim_bins_1s), ...
+     'linewidth', 1.5);
+plot(t_in_stim_bins_1s, ap_g_l_m_y_train(stim_bins_1s), ...
+     'linewidth', 1.5);
+plot(t_in_stim_bins_1s, cp_g_l_m_y_train(stim_bins_1s), ...
+     'linewidth', 1.5);
+axis tight
+title('model fits to 1s of training data');
+% Plot model fits over first second of validation data.
+subplot(2, 1, 2)
+hold on
+stem(t_in_stim_bins_1s, y_validate(stim_bins_1s, 3), 'linewidth', 1.5);
+plot(t_in_stim_bins_1s, p_g_l_m_y_validate(stim_bins_1s), ...
+     'linewidth', 1.5);
+plot(t_in_stim_bins_1s, ap_g_l_m_y_validate(stim_bins_1s), ...
+     'linewidth', 1.5);
+plot(t_in_stim_bins_1s, cp_g_l_m_y_validate(stim_bins_1s), ...
+     'linewidth', 1.5); 
+axis tight
+title('model fits to 1s of validation data');
 xlabel('time (s)');
-title('spikes and rate predictions');
-ylabel('spike count / bin');
+ylabel('spike count');
+legend('empirical spike count', 'P-GLM', 'AP-GLM', 'CP-GLM',...
+       'location', 'northwest');
+% /ss>
+
+% <ss Report training performance.
+
+% <sss Compute r-squared values for the model.
+
+% Compute mean-squared error for CP-GLM on training set.
+cp_g_l_m_m_s_e_train = mean((y_train(:, 3) - cp_g_l_m_y_train) .^ 2);
+% Compute r-squared for CP-GLM on training set.
+cp_g_l_m_r2_train = 1 - (cp_g_l_m_m_s_e_train / res_train);
+fprintf(['Training perf (R^2): CP-GLM: %.3f', fmt_r2], cp_g_l_m_r2_train);
+% The r-squared value can also be found directly within the model object.
+assert(round(cp_g_l_m.Rsquared.Ordinary, 2, 'significant') ...
+       == round(cp_g_l_m_r2_train, 2, 'significant'));
+
+% Compute mean-squared error for CP-GLM on validation set.
+cp_g_l_m_m_s_e_validate = ...
+    mean((y_validate(:, 3) - cp_g_l_m_y_validate) .^ 2);
+% Compute r-squared for CP-GLM on validation set.
+cp_g_l_m_r2_validate = 1 - (cp_g_l_m_m_s_e_validate / res_validate);
+fprintf(['Validation perf (R^2): CP-GLM: %.3f', fmt_r2], ...
+        cp_g_l_m_r2_validate);
+
+% /sss>
+
+% <sss Compute p values for the model.
+
+% Compute the f-value for CP-GLM on training set.
+cp_g_l_m_fval_train = ...
+    ((res_train - cp_g_l_m_m_s_e_train) / (length(cp_g_l_m_p_train) - 1)) ...
+     / (cp_g_l_m_m_s_e_train / (n_obs - length(cp_g_l_m_p_train)));
+% Compute the p-value from the f-distribution for CP-GLM on training set.
+cp_g_l_m_pval_train = ...
+    1 - fcdf(cp_g_l_m_fval_train, (length(cp_g_l_m_p_train) - 1), ...
+             (n_obs - length(cp_g_l_m_p_train)));
+fprintf([fmt_pval, '%.3f for the P-GLM fit on the training data is '...
+         '%.5f\n'], cp_g_l_m_r2_train, cp_g_l_m_pval_train);
+% The p-value can also be found directly within the model object.
+assert(round(cp_g_l_m.devianceTest.pValue(end), 5, 'significant') ...
+       == round(cp_g_l_m_pval_train, 5, 'significant'));
+
+% Compute the f-value for CP-GLM on validation set.
+cp_g_l_m_fval_validate = ...
+    ((res_train - cp_g_l_m_m_s_e_validate) / ...
+     (length(cp_g_l_m_p_train) - 1)) ...
+     / (cp_g_l_m_m_s_e_validate / (n_obs - length(cp_g_l_m_p_train)));
+% Compute the p-value from the f-distribution for CP-GLM on validation set.
+cp_g_l_m_pval_validate = ...
+    1 - fcdf(cp_g_l_m_fval_validate, (length(cp_g_l_m_p_train) - 1), ...
+             (n_obs - length(cp_g_l_m_p_train)));
+fprintf([fmt_pval, '%.3f for the CP-GLM fit on the training data is '...
+         '%.5f\n'], cp_g_l_m_r2_validate, cp_g_l_m_pval_validate);
+
+% /sss>
+% /ss>
+% /s>
+% 
+% Surprisngly, we find that the CP-GLM underperforms relative to the 
+% AP-GLM based on the r^2 values. However, we can also compare the fit of 
+% the models by comparing their log-likelihood values.
+
+% Compute log-likelihood values of fitted models.
+% For P-GLM.
+p_g_l_m_ll = y_train(:, 3)' * log(p_g_l_m_y_train) - sum(p_g_l_m_y_train) ...
+             - sum(log(factorial(y_train(:, 3))));
+% For CP-GLM.         
+cp_g_l_m_ll = y_train(:, 3)' * log(cp_g_l_m_y_train) - sum(cp_g_l_m_y_train) ...
+              - sum(log(factorial(y_train(:, 3))));          
+% These values can also be found directly within the glm object.
+assert(ismembertol(p_g_l_m_ll, p_g_l_m.LogLikelihood, 1, 'datascale', 1));
+assert(ismembertol(cp_g_l_m_ll, cp_g_l_m.LogLikelihood, 1, ...
+                   'datascale', 1));
+fprintf('Log-likelihood for P-GLM: %.5f\n', p_g_l_m_ll);
+fprintf('Log-likelihood for CP-GLM: %.5f\n', cp_g_l_m_ll);
+
+% Very interestingly, we see that although the CP-GLM had a lower r^2 value
+% than the AP-GLM, the CP-GLM has a higher log-likelihood value. It is
+% typically rare that an increase in the log-likelihood value is not
+% accompanied by an increase in the r^2 value, but it is mathematically
+% possible. This raises a philosophical question on which value we should
+% use (r^2 or log-likelihood) to select a model when these two values
+% disagree (i.e. are not positively correlated). Depending on the context
+% and use-case, an argument could be made for either.
+%
+% At the least, this tells us that, at least for cell 3, adding the
+% "coupled spike history parameters" hasn't conclusively improved the
+% model.
+
+% So far we've just fit a model with coupling filters for one cell. Let's
+% now fit a full population model, where we have a CP-GLM for each of the
+% four cells. 
 
 %% 6. Model comparison: log-likelihoood and AIC
 

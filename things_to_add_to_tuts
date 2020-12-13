@@ -7,3 +7,9 @@ Tut1:
 
 Tut2:
 	- finish section 6: reviewing model performance via different measures
+	- finish section 5: complete "full population" model of coupled GLMs.
+
+
+
+- change `assert(round...` statements to `assert(ismembertol...`
+- how can we predict multiple outputs from glm?
