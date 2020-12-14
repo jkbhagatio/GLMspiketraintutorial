@@ -87,7 +87,7 @@ subplot(2, 1, 2);
 % Get the spike times that happen within `bins`.
 spk_ts_in_1s = ...
     spk_ts_cell((spk_ts_cell >= t_in_stim_bins_1s(1)) ...
-                     & (spk_ts_cell < t_in_stim_bins_1s(end)));
+    & (spk_ts_cell < t_in_stim_bins_1s(end)));
 plot(spk_ts_in_1s, 1, 'ko', 'markerfacecolor', 'k');
 axis tight
 set(gca, 'xlim', t_in_stim_bins_1s([1 end]));

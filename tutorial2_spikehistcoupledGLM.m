@@ -106,7 +106,7 @@ end
 % Rename response variable as `y`.
 y = spk_ts_hist;
 
-%% 3. Create the predictor variables: Build design matrix:
+%% 3. Create the predictor variables: build design matrix
 
 % Set the number of past bins of the stimulus to use for predicting spikes
 % (Try varying this, to see how performance changes!)
@@ -294,7 +294,7 @@ legend('empirical spike count', 'P-GLM', 'AP-GLM', ...
 
 % <sss Compute r-squared values for the models.
 
-% Compute residuals around mean- for training and validation sets.
+% Compute residuals around mean for training and validation sets.
 res_train = mean((y_train(:, 3) - mean(y_train(:, 3))) .^ 2);
 res_validate = mean((y_validate(:, 3) - mean(y_validate(:, 3))) .^ 2);
 
@@ -402,6 +402,7 @@ x_2 = [x_stim, x_spk_h_all];
 x_2_train = x_2(obs_train, :);
 x_2_validate = x_2(obs_validate, :);
 x_2_test = x_2(obs_test, :);
+% /s>
 
 % Visualize a small chunk of the design matrix.
 clf;
