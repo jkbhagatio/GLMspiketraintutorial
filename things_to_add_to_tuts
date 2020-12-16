@@ -11,6 +11,8 @@ Tut2:
 
 Tut4:
 	- see how optimization functions (e.g. neg likelihood) actually run / compute optimized params
+	- why set the intercept term of `fminunc` output to its negative??
+	- how is ridge penalty equivalent to MAP estimate under an iid Gaussian prior on parameter weights?
 
 - change `assert(round...` statements to `assert(ismembertol...`
 - how can we predict multiple outputs from glm?

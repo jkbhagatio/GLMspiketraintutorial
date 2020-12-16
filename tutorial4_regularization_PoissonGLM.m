@@ -215,17 +215,17 @@ y_train = y(obs_train, :);
 y_validate = y(obs_validate, :);
 y_test = y(obs_test, :);
 
-%% 4. Fit Poisson GLM w/o regularization
+%% 4. Fit Poisson GLM (P-GLM) without regularization
 
 % <s Fit model
 
 % Here we'll compute the MLE using `fminunc` instead of `fitglm`.
 
-% Add a vector of ones to design matrix as constant term.
-x_train_2 = [-ones(n_obs_train, 1), x_train];
-x_validate_2 = [-ones(n_obs_validate, 1), x_validate];
+% Append a vector of ones to design matrix for constant term.
+x_train_2 = [ones(n_obs_train, 1), x_train];
+x_validate_2 = [ones(n_obs_validate, 1), x_validate];
 % Compute spike-triggered-average (STA) as initial value for `fminunc`.
-sta = (x_train' * y_train(:, cell_num)) ./ sum(y_train(:, cell_num));
+sta = (x_train_2' * y_train(:, cell_num)) ./ sum(y_train(:, cell_num));
 % Set `fmminunc` options 
 % (OLD VERSION commented out below)
 % opts = optimset('Gradobj','on','Hessian','on','display','iter');
@@ -234,15 +234,17 @@ opts = ...
                  'SpecifyObjectiveGradient', true, ...
                  'HessianFcn', 'objective', 'display', 'iter');
 % Set negative log-likelihood as cost function.
-cost_fn = @(p) neglogli_poissGLM(p, x_train, y_train(:, cell_num), dt_u);
+cost_fn = @(p) neglogli_poissGLM(p, x_train_2, y_train(:, cell_num), dt_u);
 % Run optimization.
 fmu_p = fminunc(cost_fn, sta, opts);  % fminunc parameters
-% Compute model's predicted output
-fmu_y_train = exp(x_train * fmu_p);
-cp_g_l_m_y_train = exp(x_train_2 * cp_g_l_m_p_train);
+% Set the intercept term of `fmu_p` to its negative ^^why??^^
+fmu_p(1) = -fmu_p(1);
+% Compute model's predicted output for training and validation sets.
+fmu_y_train = exp(x_train_2 * fmu_p);
 fmu_y_validate = exp(x_validate_2 * fmu_p);
 % /s>
 
+% Compare `fminunc` results to `fitglm`.
 cp_g_l_m = ...
     fitglm(x_train_2, y_train(:, cell_num), 'distribution', 'poisson',...
            'link', 'log', 'intercept', false);
@@ -276,64 +278,68 @@ p_g_l_m_r2_validate = 1 - (fmu_m_s_e_validate / res_validate);
 fprintf(['Validation perf (R^2): P-GLM: %.3f', fmt_r2], ...
         p_g_l_m_r2_validate);
 
-ttk = (-ntfilt+1:0)*dt_u;
-h = plot(ttk,ttk*0,'k', ttk,fmu_p(2:end)); 
-set(h(2), 'linewidth',2); axis tight;
-xlabel('time before spike'); ylabel('coefficient');
-title('Maximum likelihood filter estimate'); 
+% Here we see that the amount of the variance in the training data
+% explained by the model is 20% greater than the amount explained in the
+% validation data, which suggests that our model may be overfit to the
+% training data. We'll now explore regularization to try and reduce the
+% difference in the performance on the training vs. validation sets.
 
-% Looks bad due to lack of regularization!
+%% 5. Fit P-GLM with ridge regression prior
 
-%% === 5. Ridge regression prior ======================
+% Ridge regression decreases the fit to the training data by adding a
+% penalty (the ridge penalty) to the cost function: this penalty is equal
+% to `lambda * sum(w.^2)`, where `lambda` is a constant known as the
+% "ridge" parameter.  This is also known as an "L2 penalty".
+%
+% Minimizing error plus the ridge penalty ("penalized least squares") is
+% equivalent to computing the MAP estimate under an iid Gaussian prior on
+% the filter coefficients. We penalize the parameter estimates in this way
+% because we hope by doing so that we will reduce the variance of our MLEs,
+% which will hopefully allow for better generalization (and therefore
+% better performance) on the validation set.
+%
+% To set lambda, we'll try a bunch of possible values and use
+% cross-validation to select which is best.
 
-% Now let's regularize by adding a penalty on the sum of squared filter
-% coefficients w(i) of the form:   
-%       penalty(lambda) = lambda*(sum_i w(i).^2),
-% where lambda is known as the "ridge" parameter.  As noted in tutorial3,
-% this is equivalent to placing an iid zero-mean Gaussian prior on the RF
-% coefficients with variance equal to 1/lambda. Lambda is thus the inverse
-% variance or "precision" of the prior.
-
-% To set lambda, we'll try a grid of values and use
-% cross-validation (test error) to select which is best.  
-
-% Set up grid of lambda values (ridge parameters)
-lamvals = 2.^(0:10); % it's common to use a log-spaced set of values
-nlam = length(lamvals);
+% Set up vector of lambda values (ridge parameters)
+lambda_vals = 2 .^ (0 : 10);  % it's common to use log-spaced values
+n_l_v = length(lambda_vals);
 
 % Precompute some quantities (X'X and X'*y) for training and test data
-Imat = eye(ntfilt+1); % identity matrix of size of filter + const
-Imat(1,1) = 0; % remove penalty on constant dc offset
+i_mat = eye(length(fmu_p));  % identity matrix of size == number of params
+i_mat(1,1) = 0;              % remove penalty on intercept term
 
 % Allocate space for train and test errors
-negLtrain = zeros(nlam,1);  % training error
-negLtest = zeros(nlam,1);   % test error
-w_ridge = zeros(ntfilt+1,nlam); % filters for each lambda
+neg_lklhood_val_train = zeros(n_l_v, 1);     % training error
+neg_lklhood_val_validate = zeros(n_l_v, 1);  % test error
+w_ridge = zeros(length(fmu_p), n_l_v);       % param weights for lambdas
 
-% Define train and test log-likelihood funcs
-negLtrainfun = @(prs)neglogli_poissGLM(prs,Xtrain,spstrain,dt_u); 
-negLtestfun = @(prs)neglogli_poissGLM(prs,Xtest,spstest,dt_u); 
+% Define train and test log-likelihood functions
+neg_lklhood_train_fn = ...
+    @(p) neglogli_poissGLM(p, x_train_2, y_train, dt_u); 
+neg_lklhood_validate_fn = ...
+    @(p) neglogli_poissGLM(p, x_validate_2, y_validate, dt_u); 
 
 % Now compute MAP estimate for each ridge parameter
-wmap = fmu_p; % initialize parameter estimate
-clf; plot(ttk,ttk*0,'k'); hold on; % initialize plot
-for jj = 1:nlam
+wmap = fmu_p;  % initialize parameter estimate
+clf; plot((wmap * 0), 'k'); hold on; % initialize plot
+for i_l_v = 1 : n_l_v
     
     % Compute ridge-penalized MAP estimate
-    Cinv = lamvals(jj)*Imat; % set inverse prior covariance
+    Cinv = lambda_vals(i_l_v)*i_mat;  % inverse prior covariance
     cost_fn = @(prs)neglogposterior(prs,negLtrainfun,Cinv);
     wmap = fminunc(cost_fn,wmap,opts);
     
     % Compute negative logli
-    negLtrain(jj) = negLtrainfun(wmap); % training loss
-    negLtest(jj) = negLtestfun(wmap); % test loss
+    neg_lklhood_val_train(i_l_v) = neg_lklhood_train_fn(wmap);
+    neg_lklhood_val_validate(i_l_v) = neg_lklhood_validate_fn(wmap);
     
     % store the filter
-    w_ridge(:,jj) = wmap;
+    w_ridge(:,i_l_v) = wmap;
     
     % plot it
     plot(ttk,wmap(2:end),'linewidth', 2); 
-    title(['ridge estimate: lambda = ', num2str(lamvals(jj))]);
+    title(['ridge estimate: lambda = ', num2str(lambda_vals(i_l_v))]);
     xlabel('time before spike (s)'); drawnow; pause(0.5);
  
 end
@@ -346,10 +352,10 @@ subplot(222);
 plot(ttk,w_ridge(2:end,:)); axis tight;  
 title('all ridge estimates');
 subplot(221);
-semilogx(lamvals,-negLtrain,'o-', 'linewidth', 2);
+semilogx(lambda_vals,-neg_lklhood_val_train,'o-', 'linewidth', 2);
 title('training logli');
 subplot(223); 
-semilogx(lamvals,-negLtest,'-o', 'linewidth', 2);
+semilogx(lambda_vals,-neg_lklhood_val_validate,'-o', 'linewidth', 2);
 xlabel('lambda');
 title('test logli');
 
@@ -357,7 +363,7 @@ title('test logli');
 % However, test error has an dip at some optimal, intermediate value.
 
 % Determine which lambda is best by selecting one with lowest test error 
-[~,imin] = min(negLtest);
+[~,imin] = min(neg_lklhood_val_validate);
 filt_ridge= w_ridge(2:end,imin);
 subplot(224);
 plot(ttk,ttk*0, 'k--', ttk,filt_ridge,'linewidth', 2);
@@ -378,37 +384,37 @@ Dx1 = spdiags(ones(ntfilt,1)*[-1 1],0:1,ntfilt-1,ntfilt);
 Dx = Dx1'*Dx1; % computes squared diffs
 
 % Select smoothing penalty by cross-validation 
-lamvals = 2.^(1:14); % grid of lambda values (ridge parameters)
-nlam = length(lamvals);
+lambda_vals = 2.^(1:14); % grid of lambda values (ridge parameters)
+n_l_v = length(lambda_vals);
 
 % Embed Dx matrix in matrix with one extra row/column for constant coeff
 D = blkdiag(0,Dx); 
 
 % Allocate space for train and test errors
-negLtrain_sm = zeros(nlam,1);  % training error
-negLtest_sm = zeros(nlam,1);   % test error
-w_smooth = zeros(ntfilt+1,nlam); % filters for each lambda
+negLtrain_sm = zeros(n_l_v,1);  % training error
+negLtest_sm = zeros(n_l_v,1);   % test error
+w_smooth = zeros(ntfilt+1,n_l_v); % filters for each lambda
 
 % Now compute MAP estimate for each ridge parameter
 clf; plot(ttk,ttk*0,'k'); hold on; % initialize plot
 wmap = fmu_p; % initialize with ML fit
-for jj = 1:nlam
+for i_l_v = 1:n_l_v
     
     % Compute MAP estimate
-    Cinv = lamvals(jj)*D; % set inverse prior covariance
+    Cinv = lambda_vals(i_l_v)*D; % set inverse prior covariance
     cost_fn = @(prs)neglogposterior(prs,negLtrainfun,Cinv);
     wmap = fminunc(cost_fn,wmap,opts);
     
     % Compute negative logli
-    negLtrain_sm(jj) = negLtrainfun(wmap); % training loss
-    negLtest_sm(jj) = negLtestfun(wmap); % test loss
+    negLtrain_sm(i_l_v) = negLtrainfun(wmap); % training loss
+    negLtest_sm(i_l_v) = neg_lklhood_validate_fn(wmap); % test loss
     
     % store the filter
-    w_smooth(:,jj) = wmap;
+    w_smooth(:,i_l_v) = wmap;
     
     % plot it
     plot(ttk,wmap(2:end),'linewidth',2);
-    title(['smoothing estimate: lambda = ', num2str(lamvals(jj))]);
+    title(['smoothing estimate: lambda = ', num2str(lambda_vals(i_l_v))]);
     xlabel('time before spike (s)'); drawnow; pause(.5);
  
 end
@@ -420,10 +426,10 @@ subplot(222);
 plot(ttk,w_smooth(2:end,:)); axis tight;  
 title('all smoothing estimates');
 subplot(221);
-semilogx(lamvals,-negLtrain_sm,'o-', 'linewidth', 2);
+semilogx(lambda_vals,-negLtrain_sm,'o-', 'linewidth', 2);
 title('training LL');
 subplot(223); 
-semilogx(lamvals,-negLtest_sm,'-o', 'linewidth', 2);
+semilogx(lambda_vals,-negLtest_sm,'-o', 'linewidth', 2);
 xlabel('lambda');
 title('test LL');
 
@@ -442,7 +448,7 @@ legend(h(2:3), 'ridge', 'L2 smoothing', 'location', 'northwest');
 % clearly the "L2 smoothing" filter looks better by eye!
 
 % Last, lets see which one actually achieved lower test error
-fprintf('\nBest ridge test LL:      %.5f\n', -min(negLtest));
+fprintf('\nBest ridge test LL:      %.5f\n', -min(neg_lklhood_val_validate));
 fprintf('Best smoothing test LL:  %.5f\n', -min(negLtest_sm));
 
 
